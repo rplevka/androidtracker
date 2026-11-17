@@ -202,6 +202,12 @@ func (m *Manager) connectionSupervisor(options *paho.ClientOptions, generation u
 					client.Disconnect(250)
 					return
 				}
+				if !client.IsConnectionOpen() {
+					ticker.Stop()
+					m.logger.Warn("MQTT connection is no longer open; reconnecting")
+					client.Disconnect(250)
+					waiting = false
+				}
 			}
 		}
 		m.logger.Warn("MQTT connection lost; reconnecting")
