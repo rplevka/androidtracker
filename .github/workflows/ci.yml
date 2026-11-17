@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: kidstracker
+          POSTGRES_USER: tracker
+          POSTGRES_PASSWORD: tracker-test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tracker -d kidstracker"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      mosquitto:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        options: >-
+          --health-cmd "mosquitto_pub -h localhost -t healthcheck -m ok"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://tracker:tracker-test@localhost:5432/kidstracker?sslmode=disable
+      MQTT_TEST_BROKER: localhost:1883
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.11'
+          cache: true
+      - name: Format check
+        run: test -z "$(gofmt -l $(find . -name '*.go' -not -path './android/*'))"
+      - name: Vet
+        run: go vet ./...
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: Unit and PostGIS integration tests
+        run: go test -race -coverprofile=coverage.out ./...
+      - name: Coverage threshold (core API >= 60% statements)
+        run: |
+          go test -coverprofile=api-coverage.out ./internal/api
+          coverage="$(go tool cover -func=api-coverage.out | awk '$1 == "total:" { gsub(/%/, "", $3); print $3 }')"
+          echo "API statement coverage: ${coverage}%"
+          awk -v coverage="$coverage" 'BEGIN { exit !(coverage >= 60) }'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: '*coverage.out'
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - name: Install Android build platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+      - name: Android unit tests
+        working-directory: android
+        run: gradle testDebugUnitTest
+      - name: Build debug APK
+        working-directory: android
+        run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracker-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Script and web checks
+        run: |
+          bash -n scripts/android-debloat.sh
+          bash -n scripts/test-android-debloat.sh
+          bash -n scripts/generate-local-certs.sh
+          bash scripts/test-android-debloat.sh
+          bash scripts/check-web.sh
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate HTTPS Compose profile
+        env:
+          TRACKER_DOMAIN: tracker.example.org
+          ADMIN_TOKEN: ci-only-token-with-at-least-32-characters
+          POSTGRES_PASSWORD: ci-only-database-password
+        run: docker compose --profile https config -q
+      - name: Build API image
+        run: docker build -t kidstracker-api .

@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Kidstracker admin</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <style>
+    :root { color-scheme: light dark; font: 15px system-ui,sans-serif; }
+    body { margin: 0 auto; max-width: 1200px; padding: 1rem; }
+    header, .toolbar, .device { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+    header { justify-content: space-between; }
+    input, button { padding: .55rem; font: inherit; }
+    input[type=number] { width: 8rem; }
+    #map { height: 55vh; min-height: 320px; border-radius: 8px; margin: 1rem 0; }
+    #history-controls { border: 1px solid #8886; border-radius: 8px; padding: .8rem; }
+    .history-fields { display: flex; align-items: end; gap: .75rem; flex-wrap: wrap; }
+    .history-fields label { display: grid; gap: .25rem; }
+    #history-days { width: min(24rem, 80vw); }
+    #mqtt-panel { margin: 1rem 0; border: 1px solid #8886; border-radius: 8px; padding: .8rem; }
+    #mqtt-form { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); align-items: end; }
+    #mqtt-form label { display: grid; gap: .25rem; }
+    #mqtt-status { grid-column: 1 / -1; white-space: pre-wrap; }
+    #mqtt-status.connected { color: #26743a; }
+    #mqtt-status.error { color: #bf3737; }
+    #devices { display: grid; gap: .7rem; }
+    .device { border: 1px solid #8886; border-radius: 8px; padding: .8rem; }
+    .device-name { font-weight: 650; min-width: 9rem; }
+    .config-state { display: block; border-radius: 4px; padding: .25rem .4rem; }
+    .config-pending, .config-unsaved { color: #8a4b00; background: #e8b54a33; }
+    .config-applied { color: #26743a; background: #4aaf5933; }
+    .muted { opacity: .7; }
+    #message { min-height: 1.4em; }
+    .danger { color: #bf3737; }
+    dialog { max-width: min(92vw, 28rem); border: 1px solid #8886; border-radius: 10px; }
+    dialog::backdrop { background: #0009; }
+    #enrollment-qr { display: block; width: min(80vw, 360px); height: auto; margin: 1rem auto; image-rendering: pixelated; }
+    #enrollment-code { display: block; overflow-wrap: anywhere; margin: .7rem 0; }
+    #telemetry-dialog { max-width: min(96vw, 76rem); }
+    #telemetry-table { border-collapse: collapse; width: 100%; font-size: .86rem; }
+    #telemetry-table th, #telemetry-table td { border-bottom: 1px solid #8884; padding: .3rem .4rem; text-align: left; white-space: nowrap; }
+    #telemetry-summary { white-space: pre-wrap; }
+    @media (max-width: 600px) { .device { align-items: flex-start; flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <header><h1>Kidstracker</h1><div><input id="admin-token" type="password" autocomplete="off" placeholder="Admin token"><button id="connect">Connect</button></div></header>
+  <p id="message" class="muted">Enter the admin token to load devices. The token is kept in this tab only.</p>
+  <section class="toolbar"><input id="new-name" maxlength="120" placeholder="New device name"><button id="create">Create device</button></section>
+  <details id="mqtt-panel">
+    <summary><strong>MQTT / Home Assistant</strong></summary>
+    <form id="mqtt-form">
+      <label><span><input id="mqtt-enabled" type="checkbox"> Enabled</span></label>
+      <label>Broker host <input id="mqtt-host" required placeholder="homeassistant.local"></label>
+      <label>Port <input id="mqtt-port" type="number" min="1" max="65535" required></label>
+      <label>Username <input id="mqtt-username" autocomplete="username"></label>
+      <label>Password <input id="mqtt-password" type="password" autocomplete="new-password" placeholder="leave blank to keep stored"></label>
+      <label><span><input id="mqtt-clear-password" type="checkbox"> Clear stored password</span></label>
+      <label><span><input id="mqtt-tls" type="checkbox"> TLS</span></label>
+      <label><span><input id="mqtt-discovery-enabled" type="checkbox"> Publish Home Assistant discovery</span></label>
+      <label>Discovery prefix <input id="mqtt-discovery-prefix" placeholder="homeassistant"></label>
+      <label>Base topic <input id="mqtt-base-topic" placeholder="kidstracker"></label>
+      <label>Client ID <input id="mqtt-client-id" placeholder="auto-generated if blank"></label>
+      <button type="submit">Save MQTT settings</button>
+      <button type="button" id="mqtt-refresh">Refresh status</button>
+      <p id="mqtt-status" aria-live="polite">Enter the admin token to load MQTT settings.</p>
+    </form>
+  </details>
+  <section id="history-controls" hidden>
+    <h2 id="history-title">Trip history</h2>
+    <label for="history-days">Look back: <span id="history-days-label">1</span> day(s)</label><br>
+    <input id="history-days" type="range" min="1" max="14" value="1">
+    <div class="history-fields">
+      <label>From <input id="history-from" type="datetime-local"></label>
+      <label>To <input id="history-to" type="datetime-local"></label>
+      <button id="load-history">Load route</button>
+      <button id="close-history">Close</button>
+    </div>
+  </section>
+  <div id="map" aria-label="Device location map"></div>
+  <section id="devices"></section>
+  <dialog id="telemetry-dialog" aria-labelledby="telemetry-title">
+    <h2 id="telemetry-title">Device telemetry</h2>
+    <p id="telemetry-summary" class="muted"></p>
+    <div style="overflow-x:auto">
+      <table id="telemetry-table" aria-label="Device telemetry history">
+        <thead><tr><th>Time</th><th>Screen</th><th>Locked</th><th>Doze</th><th>Power save</th><th>Network</th><th>Standby</th><th>Battery</th><th>Temp</th><th>Wake delay</th><th>Sync</th><th>Queue</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <button id="close-telemetry-dialog">Close</button>
+  </dialog>
+  <dialog id="enrollment-dialog" aria-labelledby="enrollment-title">
+    <h2 id="enrollment-title">Scan to enroll device</h2>
+    <p id="enrollment-note" class="muted"></p>
+    <img id="enrollment-qr" alt="Enrollment QR code">
+    <code id="enrollment-code"></code>
+    <p>This code is single-use and expires after 24 hours.</p>
+    <button id="copy-enrollment-code">Copy code</button>
+    <button id="close-enrollment-dialog">Close</button>
+  </dialog>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script>
+    const tokenInput = document.querySelector('#admin-token');
+    const message = document.querySelector('#message');
+    const deviceList = document.querySelector('#devices');
+    const enrollmentDialog = document.querySelector('#enrollment-dialog');
+    const telemetryDialog = document.querySelector('#telemetry-dialog');
+    const historyControls = document.querySelector('#history-controls');
+    let qrObjectUrl = null;
+    tokenInput.value = sessionStorage.getItem('admin-token') || '';
+    const map = L.map('map').setView([20, 0], 2);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(map);
+    let markers = [];
+    let historyLine = null;
+    let historyDevice = null;
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, { ...options, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tokenInput.value}`, ...(options.headers || {}) } });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      return data;
+    }
+    function setMessage(text, isError = false) { message.textContent = text; message.className = isError ? 'danger' : 'muted'; }
+    function renderMQTTStatus(status) {
+      const target = document.querySelector('#mqtt-status');
+      if (!status || !status.connected) {
+        target.className = status && status.last_error ? 'error' : 'muted';
+        target.textContent = status && status.last_error
+          ? `Disconnected: ${status.last_error}`
+          : 'MQTT broker not connected.';
+        return;
+      }
+      target.className = 'connected';
+      target.textContent = `Connected${status.last_connected_at ? ` since ${new Date(status.last_connected_at).toLocaleString()}` : ''}.`;
+    }
+    function fillMQTTSettings(data) {
+      const settings = data.settings || {};
+      document.querySelector('#mqtt-enabled').checked = !!settings.enabled;
+      document.querySelector('#mqtt-host').value = settings.host || '';
+      document.querySelector('#mqtt-port').value = settings.port || 1883;
+      document.querySelector('#mqtt-username').value = settings.username || '';
+      document.querySelector('#mqtt-tls').checked = !!settings.tls;
+      document.querySelector('#mqtt-discovery-enabled').checked = settings.discovery_enabled !== false;
+      document.querySelector('#mqtt-discovery-prefix').value = settings.discovery_prefix || 'homeassistant';
+      document.querySelector('#mqtt-base-topic').value = settings.base_topic || 'kidstracker';
+      document.querySelector('#mqtt-client-id').value = settings.client_id || '';
+      const password = document.querySelector('#mqtt-password');
+      password.placeholder = settings.password_set ? 'stored password — leave blank to keep' : 'broker password';
+      renderMQTTStatus(data.status);
+    }
+    async function loadMQTTSettings() {
+      if (!tokenInput.value) return;
+      try {
+        fillMQTTSettings(await api('/api/admin/mqtt'));
+      } catch (error) {
+        renderMQTTStatus({last_error: error.message});
+      }
+    }
+    function batteryAdjustedInterval(seconds, battery, charging) {
+      if (charging || battery == null || battery < 0 || battery > 100) return seconds;
+      if (battery <= 5) return Math.max(seconds, 3600);
+      if (battery <= 15) return Math.min(seconds * 4, 86400);
+      if (battery <= 30) return Math.min(seconds * 2, 86400);
+      return seconds;
+    }
+    function estimatedEta(baseTime, intervalSeconds) {
+      if (!baseTime) return 'unknown';
+      const at = new Date(baseTime).getTime() + intervalSeconds * 1000;
+      const remainingMinutes = Math.ceil((at - Date.now()) / 60000);
+      return remainingMinutes <= 0 ? 'due' : `${new Date(at).toLocaleTimeString()} (in ${remainingMinutes}m)`;
+    }
+    async function showEnrollmentQR(result) {
+      document.querySelector('#enrollment-code').textContent = result.enrollment_code;
+      const image = document.querySelector('#enrollment-qr');
+      const note = document.querySelector('#enrollment-note');
+      image.hidden = true;
+      if (qrObjectUrl) URL.revokeObjectURL(qrObjectUrl);
+      qrObjectUrl = null;
+      if (location.protocol !== 'https:') {
+        note.textContent = 'QR enrollment requires opening this dashboard over HTTPS. The one-time code is available below for manual setup.';
+        enrollmentDialog.showModal();
+        return;
+      }
+      const response = await fetch('/api/admin/enrollment-qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tokenInput.value}` },
+        body: JSON.stringify({text: result.enrollment_code})
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || `QR generation failed (${response.status})`);
+      }
+      qrObjectUrl = URL.createObjectURL(await response.blob());
+      image.src = qrObjectUrl;
+      image.hidden = false;
+      note.textContent = 'Scan to fill the one-time code. Enter the HTTPS server URL if needed, then review and activate.';
+      enrollmentDialog.showModal();
+    }
+    function localDateTimeValue(date) {
+      return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    }
+    function showHistory(device) {
+      historyDevice = device;
+      const end = new Date();
+      document.querySelector('#history-title').textContent = `Trip history — ${device.name}`;
+      document.querySelector('#history-days').value = '1';
+      document.querySelector('#history-days-label').textContent = '1';
+      document.querySelector('#history-to').value = localDateTimeValue(end);
+      document.querySelector('#history-from').value = localDateTimeValue(new Date(end.getTime() - 24 * 60 * 60 * 1000));
+      historyControls.hidden = false;
+      loadHistory();
+    }
+    async function loadHistory() {
+      if (!historyDevice) return;
+      const from = new Date(document.querySelector('#history-from').value);
+      const to = new Date(document.querySelector('#history-to').value);
+      if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from >= to) {
+        return setMessage('Choose a valid start and end time.', true);
+      }
+      try {
+        const query = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), limit: '5000' });
+        const {locations} = await api(`/api/admin/devices/${encodeURIComponent(historyDevice.id)}/locations?${query}`);
+        if (!locations.length) {
+          if (historyLine) map.removeLayer(historyLine);
+          historyLine = null;
+          return setMessage(`No locations for ${historyDevice.name} in that time window.`);
+        }
+        const points = locations.map(p => [p.latitude, p.longitude]).reverse();
+        map.fitBounds(points, { padding: [20, 20] });
+        if (historyLine) map.removeLayer(historyLine);
+        historyLine = L.polyline(points, { color: '#356ac3' }).addTo(map);
+        setMessage(`Showing ${points.length} locations for ${historyDevice.name} in the selected window.`);
+      } catch (error) { setMessage(error.message, true); }
+    }
+    function telemetryBool(value, on = 'on', off = 'off') {
+      return value == null ? '?' : value ? on : off;
+    }
+    async function showTelemetry(device) {
+      try {
+        const {telemetry} = await api(`/api/admin/devices/${encodeURIComponent(device.id)}/telemetry?limit=200`);
+        document.querySelector('#telemetry-title').textContent = `Telemetry — ${device.name}`;
+        const body = document.querySelector('#telemetry-table tbody');
+        body.replaceChildren();
+        if (!telemetry.length) {
+          document.querySelector('#telemetry-summary').textContent = 'No telemetry samples yet. The device sends telemetry on config sync.';
+        } else {
+          const wakeDelays = telemetry.map(t => t.wake_delay_seconds).filter(v => v != null);
+          const syncTimes = telemetry.map(t => t.sync_duration_ms).filter(v => v != null);
+          const screenOnCount = telemetry.filter(t => t.screen_on === true).length;
+          const idleCount = telemetry.filter(t => t.device_idle === true).length;
+          const average = values => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
+          document.querySelector('#telemetry-summary').textContent =
+            `${telemetry.length} samples · screen on ${screenOnCount}/${telemetry.length} · Doze ${idleCount}/${telemetry.length}` +
+            ` · avg wake delay ${average(wakeDelays) ?? '?'}s · avg sync ${average(syncTimes) ?? '?'}ms`;
+          for (const sample of telemetry) {
+            const row = document.createElement('tr');
+            const values = [
+              new Date(sample.recorded_at).toLocaleString(),
+              telemetryBool(sample.screen_on),
+              telemetryBool(sample.device_locked, 'yes', 'no'),
+              telemetryBool(sample.device_idle, 'yes', 'no'),
+              telemetryBool(sample.power_save_mode, 'on', 'off'),
+              sample.network_type || '?',
+              sample.standby_bucket || '?',
+              sample.battery_percent == null ? '?' : `${sample.battery_percent}%`,
+              sample.battery_temperature_c == null ? '?' : `${sample.battery_temperature_c} °C`,
+              sample.wake_delay_seconds == null ? '?' : `${sample.wake_delay_seconds}s`,
+              sample.sync_duration_ms == null ? '?' : `${sample.sync_duration_ms}ms`,
+              sample.queue_size == null ? '?' : String(sample.queue_size),
+            ];
+            values.forEach(value => {
+              const cell = document.createElement('td');
+              cell.textContent = value;
+              row.append(cell);
+            });
+            body.append(row);
+          }
+        }
+        telemetryDialog.showModal();
+      } catch (error) { setMessage(error.message, true); }
+    }
+    async function refresh() {
+      try {
+        const {devices} = await api('/api/admin/devices');
+        deviceList.replaceChildren();
+        markers.forEach(marker => map.removeLayer(marker)); markers = [];
+        for (const device of devices) {
+          const row = document.createElement('article'); row.className = 'device';
+          const name = document.createElement('span'); name.className = 'device-name'; name.textContent = device.name;
+          const status = document.createElement('span'); status.className = 'muted';
+          const battery = device.battery_percent ?? device.current_location?.battery_percent;
+          const charging = device.charging === true ? ' · Charging' : '';
+          if (device.revoked) {
+            status.textContent = 'Revoked';
+          } else if (device.activated) {
+            const tracking = device.config.enabled;
+            const fixBase = device.current_location?.recorded_at || device.last_seen;
+            const fixEta = tracking
+              ? estimatedEta(fixBase, batteryAdjustedInterval(device.config.location_interval_seconds, battery, device.charging === true))
+              : 'paused';
+            const syncSeconds = tracking ? device.config.sync_interval_seconds : device.config.sleep_duration_seconds;
+            const syncEta = estimatedEta(device.last_seen, batteryAdjustedInterval(syncSeconds, battery, device.charging === true));
+            status.textContent = `Last seen: ${device.last_seen ? new Date(device.last_seen).toLocaleString() : 'never'} · Battery: ${battery == null ? 'unknown' : `${battery}%`}${charging} · Next fix: ${fixEta} · Next sync: ${syncEta}`;
+          } else {
+            status.textContent = 'Awaiting activation';
+          }
+          const appliedVersion = device.applied_config?.version ?? 0;
+          const desiredVersion = device.config.version;
+          const isConfigPending = device.activated && appliedVersion !== desiredVersion;
+          const configStatus = document.createElement('strong');
+          configStatus.className = 'config-state';
+          configStatus.textContent = !device.activated ? '' : isConfigPending
+            ? `Settings not yet applied (desired v${desiredVersion}, device v${appliedVersion || 'unknown'})`
+            : `Settings applied (v${appliedVersion})`;
+          const edit = document.createElement('button'); edit.textContent = 'Save settings';
+          edit.disabled = device.revoked;
+          const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = device.config.enabled;
+          enabled.disabled = device.revoked;
+          enabled.setAttribute('aria-label', `Tracking enabled for ${device.name}`);
+          const interval = document.createElement('input'); interval.type = 'number'; interval.min = '5'; interval.max = '86400'; interval.value = device.config.location_interval_seconds;
+          interval.disabled = device.revoked;
+          interval.title = 'Location interval (seconds)';
+          const sync = document.createElement('input'); sync.type = 'number'; sync.min = '5'; sync.max = '86400'; sync.value = device.config.sync_interval_seconds;
+          sync.disabled = device.revoked;
+          sync.title = 'Upload/config sync interval (seconds)';
+          const sleep = document.createElement('input'); sleep.type = 'number'; sleep.min = '10'; sleep.max = '604800'; sleep.value = device.config.sleep_duration_seconds;
+          sleep.disabled = device.revoked;
+          sleep.title = 'Config poll interval while tracking is disabled (seconds)';
+          const appliedDetails = document.createElement('details');
+          const appliedSummary = document.createElement('summary'); appliedSummary.textContent = 'Last applied configuration';
+          const appliedDescription = document.createElement('p');
+          if (device.applied_config) {
+            const applied = device.applied_config;
+            appliedDescription.textContent = `Applied ${device.applied_at ? new Date(device.applied_at).toLocaleString() : ''}: ${applied.enabled ? 'tracking on' : 'tracking off'}, location ${applied.location_interval_seconds}s, sync ${applied.sync_interval_seconds}s, disabled poll ${applied.sleep_duration_seconds}s, GPS timeout ${applied.gps_timeout_seconds}s, min distance ${applied.min_distance_meters}m (v${applied.version}).`;
+          } else {
+            appliedDescription.textContent = 'The device has not acknowledged a configuration yet.';
+          }
+          appliedDetails.append(appliedSummary, appliedDescription);
+          const telemetryButton = document.createElement('button');
+          telemetryButton.textContent = 'Telemetry';
+          telemetryButton.addEventListener('click', () => showTelemetry(device));
+          const history = document.createElement('button'); history.textContent = 'History'; history.addEventListener('click', () => showHistory(device));
+          const revoke = document.createElement('button'); revoke.textContent = 'Revoke'; revoke.disabled = device.revoked;
+          revoke.addEventListener('click', async () => {
+            if (!window.confirm(`Revoke ${device.name}? The client token will stop working.`)) return;
+            try { await api(`/api/admin/devices/${encodeURIComponent(device.id)}/revoke`, { method: 'POST' }); await refresh(); }
+            catch (error) { setMessage(error.message, true); }
+          });
+          const remove = document.createElement('button'); remove.textContent = 'Delete + history';
+          remove.addEventListener('click', async () => {
+            if (!window.confirm(`Permanently delete ${device.name} and all of its location history? This cannot be undone.`)) return;
+            try {
+              await api(`/api/admin/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' });
+              setMessage(`${device.name} and its location history were deleted.`);
+              await refresh();
+            } catch (error) { setMessage(error.message, true); }
+          });
+          edit.addEventListener('click', async () => {
+            try {
+              const config = { ...device.config, enabled: enabled.checked, location_interval_seconds: Number(interval.value), sync_interval_seconds: Number(sync.value), sleep_duration_seconds: Number(sleep.value) };
+              await api(`/api/admin/devices/${encodeURIComponent(device.id)}/config`, { method: 'PATCH', body: JSON.stringify(config) });
+              setMessage(`Settings saved for ${device.name}; waiting for the device to sync and acknowledge them.`);
+              await refresh();
+            } catch (error) { setMessage(error.message, true); }
+          });
+          const dirty = () => {
+            const changed = enabled.checked !== device.config.enabled ||
+              Number(interval.value) !== device.config.location_interval_seconds ||
+              Number(sync.value) !== device.config.sync_interval_seconds ||
+              Number(sleep.value) !== device.config.sleep_duration_seconds;
+            edit.disabled = device.revoked || !changed;
+            configStatus.className = `config-state ${changed ? 'config-unsaved' : isConfigPending ? 'config-pending' : 'config-applied'}`;
+            configStatus.textContent = changed ? 'Unsaved changes — not sent to server' : !device.activated ? '' : isConfigPending
+              ? `Saved · waiting for device sync (desired v${desiredVersion}, applied v${appliedVersion || 'unknown'})`
+              : `Applied by device (v${appliedVersion})`;
+          };
+          [enabled, interval, sync, sleep].forEach(input => input.addEventListener('input', dirty));
+          [enabled, interval, sync, sleep].forEach(input => input.addEventListener('change', dirty));
+          dirty();
+          row.append(name, status, configStatus, appliedDetails, enabled,
+            document.createTextNode('Location every (s)'), interval,
+            document.createTextNode('Sync every (s)'), sync,
+            document.createTextNode('Disabled poll (s)'), sleep,
+            edit, telemetryButton, history, revoke, remove);
+          deviceList.append(row);
+          if (device.current_location) {
+            const p = device.current_location;
+            const marker = L.marker([p.latitude, p.longitude]).addTo(map).bindPopup(`${device.name}<br>${new Date(p.recorded_at).toLocaleString()}<br>Accuracy: ${Math.round(p.accuracy_meters)} m`);
+            markers.push(marker);
+          }
+        }
+        if (markers.length) map.fitBounds(L.featureGroup(markers).getBounds().pad(.25));
+        setMessage(`${devices.length} device(s) loaded.`);
+      } catch (error) { setMessage(error.message, true); }
+    }
+    document.querySelector('#connect').addEventListener('click', () => {
+      sessionStorage.setItem('admin-token', tokenInput.value);
+      refresh();
+      loadMQTTSettings();
+    });
+    document.querySelector('#create').addEventListener('click', async () => {
+      const name = document.querySelector('#new-name').value.trim();
+      if (!name) return setMessage('Enter a device name first.', true);
+      try {
+        const result = await api('/api/admin/devices', { method: 'POST', body: JSON.stringify({name}) });
+        try { await showEnrollmentQR(result); }
+        catch (error) {
+          window.prompt(`QR generation failed: ${error.message}\nCopy this one-time enrollment code:`, result.enrollment_code);
+        }
+        document.querySelector('#new-name').value = '';
+        await refresh();
+      } catch (error) { setMessage(error.message, true); }
+    });
+    document.querySelector('#copy-enrollment-code').addEventListener('click', async () => {
+      const code = document.querySelector('#enrollment-code').textContent;
+      try { await navigator.clipboard.writeText(code); setMessage('Enrollment code copied.'); }
+      catch (_) { window.prompt('Copy the one-time enrollment code:', code); }
+    });
+    document.querySelector('#close-enrollment-dialog').addEventListener('click', () => enrollmentDialog.close());
+    enrollmentDialog.addEventListener('close', () => {
+      if (qrObjectUrl) URL.revokeObjectURL(qrObjectUrl);
+      qrObjectUrl = null;
+      document.querySelector('#enrollment-qr').removeAttribute('src');
+    });
+    document.querySelector('#close-telemetry-dialog').addEventListener('click', () => telemetryDialog.close());
+    document.querySelector('#mqtt-refresh').addEventListener('click', loadMQTTSettings);
+    document.querySelector('#mqtt-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!tokenInput.value) return setMessage('Enter the admin token first.', true);
+      const payload = {
+        enabled: document.querySelector('#mqtt-enabled').checked,
+        host: document.querySelector('#mqtt-host').value.trim(),
+        port: Number(document.querySelector('#mqtt-port').value),
+        username: document.querySelector('#mqtt-username').value.trim(),
+        tls: document.querySelector('#mqtt-tls').checked,
+        discovery_enabled: document.querySelector('#mqtt-discovery-enabled').checked,
+        discovery_prefix: document.querySelector('#mqtt-discovery-prefix').value.trim(),
+        base_topic: document.querySelector('#mqtt-base-topic').value.trim(),
+        client_id: document.querySelector('#mqtt-client-id').value.trim(),
+      };
+      const password = document.querySelector('#mqtt-password').value;
+      if (document.querySelector('#mqtt-clear-password').checked) payload.password = '';
+      else if (password) payload.password = password;
+      try {
+        const result = await api('/api/admin/mqtt', { method: 'PUT', body: JSON.stringify(payload) });
+        fillMQTTSettings(result);
+        document.querySelector('#mqtt-password').value = '';
+        document.querySelector('#mqtt-clear-password').checked = false;
+        setMessage('MQTT settings saved.');
+      } catch (error) {
+        renderMQTTStatus({last_error: error.message});
+        setMessage(error.message, true);
+      }
+    });
+    document.querySelector('#history-days').addEventListener('input', event => {
+      const days = Number(event.target.value);
+      document.querySelector('#history-days-label').textContent = String(days);
+      const end = new Date();
+      document.querySelector('#history-to').value = localDateTimeValue(end);
+      document.querySelector('#history-from').value = localDateTimeValue(new Date(end.getTime() - days * 24 * 60 * 60 * 1000));
+    });
+    document.querySelector('#load-history').addEventListener('click', loadHistory);
+    document.querySelector('#close-history').addEventListener('click', () => {
+      historyControls.hidden = true;
+      historyDevice = null;
+    });
+    if (tokenInput.value) {
+      refresh();
+      loadMQTTSettings();
+    }
+    window.setInterval(() => { if (tokenInput.value) refresh(); }, 60000);
+  </script>
+</body>
+</html>

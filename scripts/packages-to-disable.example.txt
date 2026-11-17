@@ -1,0 +1,3 @@
+# Add only packages you have verified are unnecessary on this exact ROM.
+# One Android package name per line; blank lines and # comments are ignored.
+# Never guess at package names based on app labels.

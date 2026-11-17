@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+coverage.out
+api-coverage.out
+postgres-data/
+traefik/certs/
+traefik/dynamic/routes.yml
+android/.gradle/
+android/local.properties
+android/**/build/
+
+android/.kotlin/
