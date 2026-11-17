@@ -71,9 +71,16 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: android-actions/setup-android@v3
-      - name: Install Android build platform
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Configure preinstalled Android SDK
+        shell: bash
+        run: |
+          sdk_root=/usr/local/lib/android/sdk
+          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          sdkmanager="$(find "$sdk_root/cmdline-tools" -path '*/bin/sdkmanager' -type f | head -n 1)"
+          test -n "$sdkmanager"
+          yes | "$sdkmanager" --licenses >/dev/null
+          "$sdkmanager" "platforms;android-35" "build-tools;34.0.0" "platform-tools"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.9
