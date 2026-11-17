@@ -18,6 +18,7 @@ services:
       retries: 10
 
   api:
+    image: ${KIDSTRACKER_API_IMAGE:-ghcr.io/rplevka/androidtracker-api:latest}
     build: .
     environment:
       DATABASE_URL: postgres://tracker:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/kidstracker?sslmode=disable

@@ -42,6 +42,25 @@ Then install the CA on the phone: **Settings → Security → Encryption & crede
 
 The `https` Compose profile adds Traefik v3, the local certificate, HTTP-to-HTTPS redirect middleware, HSTS and browser security headers. Rootless Podman cannot bind privileged ports on this host, so use `https://192.0.2.10:8443`; HTTP on host port 8081 redirects to it. Traefik uses a file provider and does not mount the Docker/Podman socket. API and PostGIS are not publicly exposed; their host-published ports bind to loopback. The normal Compose profile remains suitable for local HTTP development and does not start Traefik or display a scannable QR. Keep `traefik/certs/local-ca-key.pem` private and out of Git. This local CA is for a trusted LAN only, not a public production deployment.
 
+## Container image
+
+Pushes to `main` or `master` publish the API/frontend image to GitHub Container Registry:
+
+```text
+ghcr.io/rplevka/androidtracker-api:latest
+ghcr.io/rplevka/androidtracker-api:main
+ghcr.io/rplevka/androidtracker-api:sha-<commit>
+```
+
+The package is public, so these can be pulled anonymously:
+
+```sh
+docker pull ghcr.io/rplevka/androidtracker-api:latest
+docker compose pull api
+```
+
+The Compose file references this image and still allows `docker compose up --build` for local development. Set `KIDSTRACKER_API_IMAGE` to use a different tag or registry.
+
 To run only the database and API locally:
 
 ```sh
