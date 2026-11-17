@@ -37,8 +37,6 @@ type Manager struct {
 	telemetry       map[string]domain.Telemetry
 	configs         map[string]domain.Config
 	discovered      map[string]bool
-	lost            chan struct{}
-	stop            chan struct{}
 	out             chan job
 }
 
@@ -62,19 +60,13 @@ func (m *Manager) Configure(settings domain.MQTTSettings, password string) error
 	m.generation++
 	generation := m.generation
 	oldClient := m.client
-	oldStop := m.stop
 	m.client = nil
-	m.lost = nil
-	m.stop = nil
 	m.settings = settings
 	m.password = password
 	m.connected = false
 	m.lastError = ""
 	m.discovered = make(map[string]bool)
 	m.mu.Unlock()
-	if oldStop != nil {
-		close(oldStop)
-	}
 	if oldClient != nil {
 		oldClient.Disconnect(250)
 	}
@@ -86,15 +78,16 @@ func (m *Manager) Configure(settings domain.MQTTSettings, password string) error
 		m.setError(err)
 		return err
 	}
-	stop := make(chan struct{})
+	client := paho.NewClient(options)
 	m.mu.Lock()
 	if m.generation != generation {
 		m.mu.Unlock()
+		client.Disconnect(0)
 		return nil
 	}
-	m.stop = stop
+	m.client = client
 	m.mu.Unlock()
-	go m.connectionSupervisor(options, generation, stop)
+	go m.connectLoop(client, generation)
 	return nil
 }
 
@@ -117,16 +110,24 @@ func (m *Manager) clientOptions(settings domain.MQTTSettings, password string, g
 	options := paho.NewClientOptions().
 		AddBroker(fmt.Sprintf("%s://%s:%d", scheme, settings.Host, settings.Port)).
 		SetClientID(clientID).
-		SetAutoReconnect(false).
-		SetConnectRetry(false).
+		SetAutoReconnect(true).
+		SetConnectRetry(true).
 		SetConnectTimeout(10*time.Second).
+		SetConnectRetryInterval(5*time.Second).
+		SetMaxReconnectInterval(15*time.Second).
 		SetKeepAlive(30*time.Second).
 		SetPingTimeout(10*time.Second).
 		SetCleanSession(true).
 		SetOrderMatters(false).
 		SetWill(normalizeBaseTopic(settings.BaseTopic)+"/status", "offline", 1, true).
+		SetOnConnectHandler(func(client paho.Client) {
+			m.onConnected(client, generation)
+		}).
 		SetConnectionLostHandler(func(client paho.Client, err error) {
 			m.onConnectionLost(client, generation, err)
+		}).
+		SetReconnectingHandler(func(client paho.Client, _ *paho.ClientOptions) {
+			m.onReconnecting(client, generation)
 		})
 	if settings.Username != "" {
 		options.SetUsername(settings.Username)
@@ -140,108 +141,34 @@ func (m *Manager) clientOptions(settings domain.MQTTSettings, password string, g
 	return options, nil
 }
 
-func (m *Manager) connectionSupervisor(options *paho.ClientOptions, generation uint64, stop <-chan struct{}) {
-	backoff := 2 * time.Second
-	for {
-		if !m.isRunning(generation, stop) {
-			return
+func (m *Manager) connectLoop(client paho.Client, generation uint64) {
+	if !m.isCurrent(client, generation) {
+		return
+	}
+	token := client.Connect()
+	if token.WaitTimeout(15 * time.Second) {
+		if token.Error() != nil {
+			m.setError(token.Error())
+			m.logger.Warn("MQTT initial connection failed", "error", token.Error())
 		}
-		client := paho.NewClient(options)
-		lost := make(chan struct{}, 1)
-		m.mu.Lock()
-		if m.generation != generation {
-			m.mu.Unlock()
-			client.Disconnect(0)
-			return
-		}
-		m.client = client
-		m.lost = lost
-		m.connected = false
+		return
+	}
+	m.setError(fmt.Errorf("MQTT initial connection is still pending; Paho will keep retrying"))
+	m.logger.Warn("MQTT initial connection is still pending; Paho will keep retrying")
+}
+
+func (m *Manager) onReconnecting(client paho.Client, generation uint64) {
+	m.mu.Lock()
+	if m.generation != generation || m.client != client {
 		m.mu.Unlock()
-
-		token := client.Connect()
-		if !token.WaitTimeout(15*time.Second) || token.Error() != nil {
-			err := token.Error()
-			if err == nil {
-				err = fmt.Errorf("MQTT connection attempt timed out")
-			}
-			m.setError(err)
-			m.logger.Warn("MQTT connection attempt failed", "error", err)
-			client.Disconnect(100)
-			if !m.waitForRetry(&backoff, stop) {
-				return
-			}
-			continue
-		}
-		if !m.isCurrent(client, generation) {
-			client.Disconnect(250)
-			return
-		}
-
-		m.onConnected(client, generation)
-		backoff = 2 * time.Second
-
-		ticker := time.NewTicker(5 * time.Second)
-		waiting := true
-		for waiting {
-			select {
-			case <-m.ctx.Done():
-				ticker.Stop()
-				client.Disconnect(250)
-				return
-			case <-stop:
-				ticker.Stop()
-				client.Disconnect(250)
-				return
-			case <-lost:
-				ticker.Stop()
-				waiting = false
-			case <-ticker.C:
-				if !m.isCurrent(client, generation) {
-					ticker.Stop()
-					client.Disconnect(250)
-					return
-				}
-				if !client.IsConnectionOpen() {
-					ticker.Stop()
-					m.logger.Warn("MQTT connection is no longer open; reconnecting")
-					client.Disconnect(250)
-					waiting = false
-				}
-			}
-		}
-		m.logger.Warn("MQTT connection lost; reconnecting")
-		if !m.waitForRetry(&backoff, stop) {
-			return
-		}
+		return
 	}
-}
-
-func (m *Manager) waitForRetry(backoff *time.Duration, stop <-chan struct{}) bool {
-	delay := *backoff
-	if delay > 30*time.Second {
-		delay = 30 * time.Second
+	m.connected = false
+	if m.lastError == "" {
+		m.lastError = "MQTT broker reconnecting"
 	}
-	select {
-	case <-m.ctx.Done():
-		return false
-	case <-stop:
-		return false
-	case <-time.After(delay):
-	}
-	if *backoff < 30*time.Second {
-		*backoff *= 2
-		if *backoff > 30*time.Second {
-			*backoff = 30 * time.Second
-		}
-	}
-	return true
-}
-
-func (m *Manager) isRunning(generation uint64, stop <-chan struct{}) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.generation == generation && m.stop == stop
+	m.mu.Unlock()
+	m.logger.Warn("MQTT reconnecting")
 }
 
 func (m *Manager) isCurrent(client paho.Client, generation uint64) bool {
@@ -273,21 +200,21 @@ func (m *Manager) onConnectionLost(client paho.Client, generation uint64, err er
 		m.mu.Unlock()
 		return
 	}
+	if client.IsConnectionOpen() {
+		// A fast reconnect already restored the connection; ignore the stale callback.
+		m.mu.Unlock()
+		return
+	}
 	m.connected = false
 	if err != nil {
 		m.lastError = err.Error()
 	}
 	m.discovered = make(map[string]bool)
-	lost := m.lost
 	m.mu.Unlock()
 	if err != nil {
-		m.logger.Warn("MQTT connection lost", "error", err)
-	}
-	if lost != nil {
-		select {
-		case lost <- struct{}{}:
-		default:
-		}
+		m.logger.Warn("MQTT connection lost; Paho will reconnect", "error", err)
+	} else {
+		m.logger.Warn("MQTT connection lost; Paho will reconnect")
 	}
 }
 
