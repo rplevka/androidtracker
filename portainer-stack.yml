@@ -1,0 +1,66 @@
+# Deploy in Portainer with:
+#   POSTGRES_PASSWORD=<random password>
+#   ADMIN_TOKEN=<same admin token used by the API>
+#
+# The hostname tracker.lan must resolve to the Portainer host. The external
+# `traefik` network and its default *.lan certificate are expected to exist.
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kidstracker
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - kidstracker-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracker -d kidstracker"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - backend
+
+  api:
+    image: ghcr.io/rplevka/androidtracker-api:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://tracker:${POSTGRES_PASSWORD}@db:5432/kidstracker?sslmode=disable
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      LISTEN_ADDR: :8080
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+      - traefik
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik
+      traefik.http.routers.kidstracker.rule: Host(`tracker.lan`)
+      traefik.http.routers.kidstracker.entrypoints: websecure
+      traefik.http.routers.kidstracker.tls: "true"
+      traefik.http.routers.kidstracker.middlewares: kidstracker-secure-headers
+      traefik.http.routers.kidstracker.service: kidstracker
+      traefik.http.routers.kidstracker-http.rule: Host(`tracker.lan`)
+      traefik.http.routers.kidstracker-http.entrypoints: web
+      traefik.http.routers.kidstracker-http.middlewares: kidstracker-https
+      traefik.http.routers.kidstracker-http.service: kidstracker
+      traefik.http.middlewares.kidstracker-https.redirectscheme.scheme: https
+      traefik.http.middlewares.kidstracker-https.redirectscheme.permanent: "true"
+      traefik.http.middlewares.kidstracker-secure-headers.headers.stsSeconds: "31536000"
+      traefik.http.middlewares.kidstracker-secure-headers.headers.frameDeny: "true"
+      traefik.http.middlewares.kidstracker-secure-headers.headers.contentTypeNosniff: "true"
+      traefik.http.middlewares.kidstracker-secure-headers.headers.referrerPolicy: strict-origin-when-cross-origin
+      traefik.http.middlewares.kidstracker-secure-headers.headers.permissionsPolicy: "geolocation=(),camera=(),microphone=()"
+      traefik.http.services.kidstracker.loadbalancer.server.port: "8080"
+
+volumes:
+  kidstracker-data:
+
+networks:
+  backend:
+    internal: true
+  traefik:
+    external: true

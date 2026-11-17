@@ -120,5 +120,10 @@ jobs:
           ADMIN_TOKEN: ci-only-token-with-at-least-32-characters
           POSTGRES_PASSWORD: ci-only-database-password
         run: docker compose --profile https config -q
+      - name: Validate Portainer stack
+        env:
+          ADMIN_TOKEN: ci-only-token-with-at-least-32-characters
+          POSTGRES_PASSWORD: ci-only-database-password
+        run: docker compose -f portainer-stack.yml config -q
       - name: Build API image
         run: docker build -t kidstracker-api .

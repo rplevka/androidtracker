@@ -61,6 +61,10 @@ docker compose pull api
 
 The Compose file references this image and still allows `docker compose up --build` for local development. Set `KIDSTRACKER_API_IMAGE` to use a different tag or registry.
 
+### Portainer
+
+`portainer-stack.yml` is a standalone Portainer stack definition. It uses the published image, an external `traefik` network, and the existing `*.lan` default certificate. Set `POSTGRES_PASSWORD` and `ADMIN_TOKEN` as stack environment variables before deploying. The resulting UI is `https://tracker.lan`; HTTP is redirected to HTTPS. `tracker.lan` must resolve to the Portainer host, and the Traefik network must already exist.
+
 To run only the database and API locally:
 
 ```sh
