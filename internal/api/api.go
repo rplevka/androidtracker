@@ -335,7 +335,8 @@ func (s *Server) recordLocations(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "locations must contain between 1 and 500 items")
 		return
 	}
-	for _, location := range request.Locations {
+	for index := range request.Locations {
+		location := &request.Locations[index]
 		if len(location.ID) == 0 || len(location.ID) > 128 || location.Latitude < -90 || location.Latitude > 90 ||
 			location.Longitude < -180 || location.Longitude > 180 || location.AccuracyM < 0 || location.AccuracyM > 100000 ||
 			location.RecordedAt.IsZero() || location.RecordedAt.After(time.Now().Add(5*time.Minute)) {
@@ -357,6 +358,14 @@ func (s *Server) recordLocations(w http.ResponseWriter, r *http.Request) {
 		if location.StandbyBucket != nil && len(*location.StandbyBucket) > 64 {
 			writeError(w, http.StatusBadRequest, "invalid standby bucket")
 			return
+		}
+		if location.LocationSource != nil {
+			source := strings.ToLower(strings.TrimSpace(*location.LocationSource))
+			if source == "" || len(source) > 32 || !validLocationSource(source) {
+				writeError(w, http.StatusBadRequest, "invalid location source")
+				return
+			}
+			*location.LocationSource = source
 		}
 	}
 	device := deviceFromContext(r)
@@ -634,6 +643,15 @@ func validateMQTTSettings(settings domain.MQTTSettings) error {
 		return errors.New("MQTT topics may contain only letters, numbers, underscore, hyphen and slashes")
 	}
 	return nil
+}
+
+func validLocationSource(value string) bool {
+	for _, char := range value {
+		if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '_' || char == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func validTopicPart(value string) bool {

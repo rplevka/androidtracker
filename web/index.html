@@ -236,6 +236,9 @@
     function telemetryBool(value, on = 'on', off = 'off') {
       return value == null ? '?' : value ? on : off;
     }
+    function locationSourceLabel(source) {
+      return source === 'gps' ? 'GPS' : source === 'network' ? 'network (cell/Wi-Fi)' : source || 'unknown';
+    }
     async function showTelemetry(device) {
       try {
         const {telemetry} = await api(`/api/admin/devices/${encodeURIComponent(device.id)}/telemetry?limit=200`);
@@ -252,7 +255,10 @@
           const average = values => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
           document.querySelector('#telemetry-summary').textContent =
             `${telemetry.length} samples · screen on ${screenOnCount}/${telemetry.length} · Doze ${idleCount}/${telemetry.length}` +
-            ` · avg wake delay ${average(wakeDelays) ?? '?'}s · avg sync ${average(syncTimes) ?? '?'}ms`;
+            ` · avg wake delay ${average(wakeDelays) ?? '?'}s · avg sync ${average(syncTimes) ?? '?'}ms` +
+            (device.current_location?.location_source
+              ? ` · last fix via ${locationSourceLabel(device.current_location.location_source)}`
+              : '');
           for (const sample of telemetry) {
             const row = document.createElement('tr');
             const values = [
@@ -301,7 +307,9 @@
               : 'paused';
             const syncSeconds = tracking ? device.config.sync_interval_seconds : device.config.sleep_duration_seconds;
             const syncEta = estimatedEta(device.last_seen, batteryAdjustedInterval(syncSeconds, battery, device.charging === true));
-            status.textContent = `Last seen: ${device.last_seen ? new Date(device.last_seen).toLocaleString() : 'never'} · Battery: ${battery == null ? 'unknown' : `${battery}%`}${charging} · Next fix: ${fixEta} · Next sync: ${syncEta}`;
+            const fixSource = device.current_location?.location_source;
+            const fixSourceText = fixSource ? ` · Fix source: ${locationSourceLabel(fixSource)}` : '';
+            status.textContent = `Last seen: ${device.last_seen ? new Date(device.last_seen).toLocaleString() : 'never'} · Battery: ${battery == null ? 'unknown' : `${battery}%`}${charging} · Next fix: ${fixEta} · Next sync: ${syncEta}${fixSourceText}`;
           } else {
             status.textContent = 'Awaiting activation';
           }
@@ -386,7 +394,8 @@
           deviceList.append(row);
           if (device.current_location) {
             const p = device.current_location;
-            const marker = L.marker([p.latitude, p.longitude]).addTo(map).bindPopup(`${device.name}<br>${new Date(p.recorded_at).toLocaleString()}<br>Accuracy: ${Math.round(p.accuracy_meters)} m`);
+            const source = p.location_source ? `<br>Source: ${locationSourceLabel(p.location_source)}` : '';
+            const marker = L.marker([p.latitude, p.longitude]).addTo(map).bindPopup(`${device.name}<br>${new Date(p.recorded_at).toLocaleString()}<br>Accuracy: ${Math.round(p.accuracy_meters)} m${source}`);
             markers.push(marker);
           }
         }

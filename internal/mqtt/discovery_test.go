@@ -41,6 +41,22 @@ func TestDiscoveryPublishesGPSTrackerAndSensors(t *testing.T) {
 	if tracker["availability_topic"] != "kidstracker/status" {
 		t.Fatalf("availability_topic = %v", tracker["availability_topic"])
 	}
+	var sourceSensor map[string]any
+	for topic, payload := range messages {
+		if strings.HasSuffix(topic, "_location_source/config") {
+			if err := json.Unmarshal([]byte(payload), &sourceSensor); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if sourceSensor == nil {
+		t.Fatal("location source sensor discovery missing")
+	}
+	if sourceSensor["state_topic"] != "kidstracker/abc123/location" ||
+		sourceSensor["value_template"] != "{{ value_json.location_source }}" {
+		t.Fatalf("unexpected location source sensor discovery: %#v", sourceSensor)
+	}
 	device, ok := tracker["device"].(map[string]any)
 	if !ok || device["name"] != "Backpack" {
 		t.Fatalf("device metadata missing: %#v", tracker["device"])
@@ -69,12 +85,14 @@ func TestLocationAndTelemetryPayloadsContainMetrics(t *testing.T) {
 	wake := 12
 	sync := int64(180)
 	queue := 3
+	source := "network"
 	state := locationState(domain.Location{
 		Latitude: 51.5, Longitude: -0.12, AccuracyM: accuracy, BatteryPercent: &battery,
-		Charging: &charging, ScreenOn: &screen, RecordedAt: time.Now().UTC(),
+		Charging: &charging, ScreenOn: &screen, LocationSource: &source, RecordedAt: time.Now().UTC(),
 	})
-	if state["latitude"] != 51.5 || state["longitude"] != -0.12 || state["gps_accuracy"] != accuracy {
-		t.Fatalf("location state missing coordinates: %#v", state)
+	if state["latitude"] != 51.5 || state["longitude"] != -0.12 || state["gps_accuracy"] != accuracy ||
+		state["location_source"] != source {
+		t.Fatalf("location state missing coordinates or source: %#v", state)
 	}
 	telemetry := telemetryState(domain.Telemetry{
 		RecordedAt: time.Now().UTC(), ScreenOn: &screen, BatteryTemperatureC: &temperature,

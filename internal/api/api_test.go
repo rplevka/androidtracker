@@ -135,7 +135,7 @@ func TestDeviceRoutesRequireBearerToken(t *testing.T) {
 func TestLocationBatchValidatesAndStoresIdempotentIDs(t *testing.T) {
 	repo := &fakeRepository{config: domain.DefaultConfig()}
 	server := New(repo, "admin-secret")
-	body := `{"locations":[{"id":"sample-1","latitude":51.5,"longitude":-0.12,"accuracy_meters":8,"recorded_at":"2025-01-01T12:00:00Z"}]}`
+	body := `{"locations":[{"id":"sample-1","latitude":51.5,"longitude":-0.12,"accuracy_meters":8,"location_source":"gps","recorded_at":"2025-01-01T12:00:00Z"}]}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/locations/batch", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer device-token")
 	recorder := httptest.NewRecorder()
@@ -143,7 +143,8 @@ func TestLocationBatchValidatesAndStoresIdempotentIDs(t *testing.T) {
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if repo.lastID != "device-1" || len(repo.locations) != 1 || repo.locations[0].ID != "sample-1" {
+	if repo.lastID != "device-1" || len(repo.locations) != 1 || repo.locations[0].ID != "sample-1" ||
+		repo.locations[0].LocationSource == nil || *repo.locations[0].LocationSource != "gps" {
 		t.Fatalf("location was not stored for authenticated device: %#v", repo)
 	}
 }
@@ -217,6 +218,18 @@ func TestLocationBatchRejectsInvalidCoordinates(t *testing.T) {
 func TestLocationBatchRejectsInvalidBatteryPercentage(t *testing.T) {
 	server := New(&fakeRepository{}, "admin-secret")
 	body := `{"locations":[{"id":"bad-battery","latitude":51,"longitude":0,"accuracy_meters":10,"battery_percent":101,"recorded_at":"2025-01-01T12:00:00Z"}]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/locations/batch", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer device-token")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestLocationBatchRejectsInvalidLocationSource(t *testing.T) {
+	server := New(&fakeRepository{}, "admin-secret")
+	body := `{"locations":[{"id":"bad-source","latitude":51,"longitude":0,"accuracy_meters":10,"location_source":"cell tower","recorded_at":"2025-01-01T12:00:00Z"}]}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/locations/batch", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer device-token")
 	recorder := httptest.NewRecorder()

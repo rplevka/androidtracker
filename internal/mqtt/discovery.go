@@ -149,7 +149,7 @@ func discoveryMessages(settings domain.MQTTSettings, device domain.Device) map[s
 	entity("binary_sensor", "charging", "Charging", "{{ 'ON' if value_json.charging else 'OFF' }}", map[string]any{
 		"device_class": "battery_charging",
 	})
-	entity("sensor", "accuracy", "GPS accuracy", "{{ value_json.gps_accuracy }}", map[string]any{
+	entity("sensor", "accuracy", "Location accuracy", "{{ value_json.gps_accuracy }}", map[string]any{
 		"unit_of_measurement": "m", "device_class": "distance", "state_class": "measurement",
 		"suggested_display_precision": 0,
 	})
@@ -162,7 +162,7 @@ func discoveryMessages(settings domain.MQTTSettings, device domain.Device) map[s
 	entity("sensor", "bearing", "Bearing", "{{ value_json.bearing }}", map[string]any{
 		"unit_of_measurement": "°", "state_class": "measurement", "icon": "mdi:compass",
 	})
-	entity("sensor", "last_fix", "Last GPS fix", "{{ value_json.recorded_at }}", map[string]any{
+	entity("sensor", "last_fix", "Last fix", "{{ value_json.recorded_at }}", map[string]any{
 		"device_class": "timestamp",
 	})
 	entity("binary_sensor", "screen", "Screen", "{{ 'ON' if value_json.screen_on else 'OFF' }}", map[string]any{
@@ -183,9 +183,12 @@ func discoveryMessages(settings domain.MQTTSettings, device domain.Device) map[s
 	entity("sensor", "standby", "Standby bucket", "{{ value_json.standby_bucket }}", map[string]any{
 		"icon": "mdi:timer-sand", "entity_category": "diagnostic",
 	})
-	entity("sensor", "gps_fix_duration", "GPS fix duration", "{{ value_json.gps_fix_duration_ms }}", map[string]any{
+	entity("sensor", "gps_fix_duration", "Fix duration", "{{ value_json.gps_fix_duration_ms }}", map[string]any{
 		"unit_of_measurement": "ms", "device_class": "duration", "state_class": "measurement",
 		"entity_category": "diagnostic",
+	})
+	entity("sensor", "location_source", "Location source", "{{ value_json.location_source }}", map[string]any{
+		"icon": "mdi:map-marker-radius", "entity_category": "diagnostic",
 	})
 
 	telemetryEntity("sensor", "battery_temperature", "Battery temperature", "{{ value_json.battery_temperature_c }}", map[string]any{
@@ -250,6 +253,7 @@ func locationState(location domain.Location) map[string]any {
 	setOptional(state, "standby_bucket", location.StandbyBucket)
 	setOptional(state, "network_type", location.NetworkType)
 	setOptional(state, "gps_fix_duration_ms", location.GPSFixDurationMS)
+	setOptional(state, "location_source", location.LocationSource)
 	return state
 }
 

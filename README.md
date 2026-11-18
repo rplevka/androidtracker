@@ -4,6 +4,8 @@ A small, self-hosted location tracker for a dedicated Android phone. The initial
 
 > This is a prototype, not an emergency-service or guaranteed real-time safety system. Android Doze, radio coverage, GPS conditions, battery state, and ROM behavior can delay reports. Test it with the actual phone and network before relying on it.
 
+Location acquisition prefers GPS and falls back to Android's network provider (cell/Wi-Fi location) when GPS is disabled or does not produce a fix within the GPS timeout. Every fix records its `location_source` (`gps` or `network`), which the admin dashboard and Home Assistant expose.
+
 ## Components
 
 - `cmd/server`, `internal/api`: Go API, one-time device enrollment, bearer-token authentication, config polling, idempotent batch uploads, admin API, and enrollment QR generation.
@@ -95,7 +97,7 @@ POST  /api/admin/devices/{id}/revoke
 DELETE /api/admin/devices/{id}
 ```
 
-Configuration bounds are `location_interval_seconds` 5–86400 seconds, `sync_interval_seconds` 5–86400 seconds, `sleep_duration_seconds` 10–604800 seconds, and GPS timeout 5–180 seconds. The short 5/10-second minima are supported for debugging but can consume substantial battery. Android Doze and alarm quotas can still defer background wakes. Location interval controls GPS fixes while enabled; sync interval controls batch upload and config polling; sleep duration controls config polling while tracking is disabled. Each client location ID is unique per device, so retried batches do not create duplicate history points.
+Configuration bounds are `location_interval_seconds` 5–86400 seconds, `sync_interval_seconds` 5–86400 seconds, `sleep_duration_seconds` 10–604800 seconds, and GPS timeout 5–180 seconds. The short 5/10-second minima are supported for debugging but can consume substantial battery. Android Doze and alarm quotas can still defer background wakes. Location interval controls location fixes (GPS first, with network fallback) while enabled; sync interval controls batch upload and config polling; sleep duration controls config polling while tracking is disabled. Each client location ID is unique per device, so retried batches do not create duplicate history points.
 
 Deleting a device is permanent: it removes the device and cascades to all of its stored location history. The Android client will detect the invalid token at its next sync and show enrollment again.
 
@@ -103,7 +105,7 @@ The history control offers a days-back slider plus exact local start/end date-ti
 
 ## Telemetry
 
-Each sync acknowledges config with a telemetry sample, avoiding an extra request. Samples record screen on/off, lock state, Doze/idle state, battery-saver state, app standby bucket, network type, GPS-provider state, battery percentage/temperature, wake delay from the scheduled alarm, sync duration, queue size and applied config version. Each location also records screen/Doze/power-save/network context and GPS acquisition duration.
+Each sync acknowledges config with a telemetry sample, avoiding an extra request. Samples record screen on/off, lock state, Doze/idle state, battery-saver state, app standby bucket, network type, GPS-provider state, battery percentage/temperature, wake delay from the scheduled alarm, sync duration, queue size and applied config version. Each location also records screen/Doze/power-save/network context, the fix source (`gps` or `network`), and fix acquisition duration. The dashboard shows the source of the latest fix and includes it in the telemetry view.
 
 Open **Telemetry** on a device in the dashboard to inspect recent samples, or query:
 
@@ -127,11 +129,11 @@ At a 5-second sync interval, telemetry adds substantial database growth and requ
 
 Configure the broker under **MQTT / Home Assistant** in the admin page. The backend supports any MQTT 3.1.1/5-compatible broker; point it at Home Assistant's Mosquitto broker (typically `homeassistant.local:1883`). Discovery is optional, but enabled by default with prefix `homeassistant`. The MQTT password is encrypted at rest using a key derived from `ADMIN_TOKEN`; changes to `ADMIN_TOKEN` require re-entering the MQTT password. The API has a separate non-internal egress network for reaching a LAN MQTT broker while the database and proxy networks remain isolated.
 
-The backend publishes a retained Home Assistant device tracker (`source_type: gps`) plus sensors/binary sensors for battery, charging, GPS accuracy, speed, altitude, bearing, last fix, screen, lock, Doze, power save, network, standby bucket, GPS fix duration, battery temperature, wake delay, sync duration, queue size, GPS availability, tracking enabled and configured intervals. Home Assistant uses the tracker's GPS attributes and its zones to derive zone state.
+The backend publishes a retained Home Assistant device tracker (`source_type: gps`) plus sensors/binary sensors for battery, charging, location accuracy, speed, altitude, bearing, last fix, location source, screen, lock, Doze, power save, network, standby bucket, fix duration, battery temperature, wake delay, sync duration, queue size, GPS availability, tracking enabled and configured intervals. The tracker's JSON attributes include `location_source` (`gps` or `network`), and a dedicated **Location source** sensor exposes the same value. Home Assistant uses the tracker's GPS attributes and its zones to derive zone state.
 
 There is no `gps` sensor device class: use a `device_tracker` with `source_type: gps`, which this integration does. To associate it with a person, create/edit the person in Home Assistant (**Settings → People**) and select the discovered `device_tracker` entity; MQTT discovery does not assign people automatically.
 
-Native Home Assistant zones are circles with a radius and latitude/longitude. Associate the tracker with a person (or use the tracker directly) and use **zone entered/left** triggers in automations; the device tracker also exposes `in_zones`. For polygon/arbitrary drawn areas, Home Assistant does not provide native polygon zones; use a custom integration such as Polygonal Zones or Poly-Zone, or a template point-in-polygon helper. The server does not evaluate geofences itself.
+Native Home Assistant zones are circles with a radius and latitude/longitude. Associate the tracker with a person (or use the tracker directly) and use **zone entered/left** triggers in automations; the device tracker also exposes `in_zones`. For polygon/arbitrary drawn areas, Home Assistant does not provide native polygon zones; use a custom integration such as Polygonal Zones or Poly-Zone, or a template point-in-polygon helper. The server does not evaluate geofences itself. Automations can read `state_attr('device_tracker.<name>', 'location_source')` to distinguish a GPS fix from a cell/Wi-Fi fallback.
 
 ```yaml
 automation:
@@ -151,26 +153,26 @@ The backend publishes discovery and state to `<base_topic>/<device_id>/...`; con
 
 ## Android 9 / battery notes
 
-The client uses a short-lived foreground service for a GPS acquisition or batch sync, releases its wakelock, and schedules the next one-shot wake with `AlarmManager.setAndAllowWhileIdle`. It uses Android's `LocationManager` rather than requiring Google Play Services. Android can still defer wakeups; reliable, frequent background location is inherently more battery-intensive. Keep the enabled cadence conservative, test overnight and with mobile data, and check actual battery drain. The app queues a bounded number of fixes between syncs and while offline. It re-arms the alarm after reboot and after an APK update.
+The client uses a short-lived foreground service for a location acquisition or batch sync, releases its wakelock, and schedules the next one-shot wake with `AlarmManager.setAndAllowWhileIdle`. It uses Android's `LocationManager` rather than requiring Google Play Services. It requests GPS and the network provider together; GPS wins when it succeeds, and the best network fix is used if GPS is disabled or times out. Android's network provider is the cell/Wi-Fi location source; on AOSP builds without a network location provider it may be unavailable, and pure cell-tower geolocation without a network location provider is not supported. Android can still defer wakeups; reliable, frequent background location is inherently more battery-intensive. Keep the enabled cadence conservative, test overnight and with mobile data, and check actual battery drain. The app queues a bounded number of fixes between syncs and while offline. It re-arms the alarm after reboot and after an APK update.
 
-Battery level and charging state are included with location reports and shown in the admin list. On battery, the client doubles its wake interval at 30% or below, quadruples it at 15% or below, and skips GPS at 5% or below (retaining the offline queue). Plugged-in tracking returns to the configured cadence. These conservative thresholds are currently fixed in the client. The wakelock is time-bounded, GPS acquisition has a configurable timeout, and no battery-optimization exemption is requested.
+Battery level and charging state are included with location reports and shown in the admin list. On battery, the client doubles its wake interval at 30% or below, quadruples it at 15% or below, and skips location acquisition at 5% or below (retaining the offline queue). Plugged-in tracking returns to the configured cadence. These conservative thresholds are currently fixed in the client. The wakelock is time-bounded, location acquisition has a configurable GPS timeout, and no battery-optimization exemption is requested.
 
-The activated app has a **Status** tab showing the fetched config, battery/charging state, queued fixes, last location/sync and next wake. **Sync now** uploads cached fixes and fetches config immediately without requesting a new GPS fix; a successful config refresh adjusts the next scheduled wake. If the server returns 401/403 (for example, after device revocation), the app drops the token and shows enrollment again.
+The activated app has a **Status** tab showing the fetched config, battery/charging state, queued fixes, last location/sync (including whether the last fix came from GPS or the network provider) and next wake. **Sync now** uploads cached fixes and fetches config immediately without requesting a new location fix; a successful config refresh adjusts the next scheduled wake. If the server returns 401/403 (for example, after device revocation), the app drops the token and shows enrollment again.
 
 For measurement, compare 24-hour screen-off runs with tracking disabled, 1-hour disabled-mode polling, and the intended tracking cadence. Record battery percentage, GPS fix time, upload duration, and signal conditions. Use `adb shell dumpsys batterystats`, `adb shell dumpsys alarm`, and `adb shell dumpsys deviceidle`; tune cadence/timeouts from measured drain rather than removing Android power-management services.
 
 ## Location data volume and batching
 
-The table estimates one uncompressed JSON location record at **about 250 bytes** and PostgreSQL/PostGIS storage at **about 400–600 bytes per stored point**, including indexes. These are planning estimates, not measurements; optional sensor fields, database bloat, HTTP headers and TLS overhead are excluded. The Android client gzip-compresses each location batch; the Go API accepts gzip and caps both compressed and expanded JSON request bodies. A sync uploads all fixes collected since its previous successful batch, so changing the sync interval changes network-session frequency, not the number of GPS records.
+The table estimates one uncompressed JSON location record at **about 275 bytes** and PostgreSQL/PostGIS storage at **about 400–600 bytes per stored point**, including indexes. These are planning estimates, not measurements; optional sensor fields, database bloat, HTTP headers and TLS overhead are excluded. The Android client gzip-compresses each location batch; the Go API accepts gzip and caps both compressed and expanded JSON request bodies. A sync uploads all fixes collected since its previous successful batch, so changing the sync interval changes network-session frequency, not the number of location records.
 
-| GPS location interval | Sync interval | Fixes/year | Raw location JSON/year | Approx. DB growth/device/year |
+| Location interval | Sync interval | Fixes/year | Raw location JSON/year | Approx. DB growth/device/year |
 | --- | ---: | ---: | ---: | ---: |
-| 5 seconds (debug stress) | 5 seconds | 6,307,200 | ~1.58 GB | ~2.5–3.8 GB |
-| 5 seconds (debug stress) | 15 minutes | 6,307,200 | ~1.58 GB | ~2.5–3.8 GB |
-| 5 minutes | 15 minutes | 105,120 | ~26 MB | ~42–63 MB |
-| 15 minutes | 1 hour | 35,040 | ~8.8 MB | ~14–21 MB |
+| 5 seconds (debug stress) | 5 seconds | 6,307,200 | ~1.73 GB | ~2.5–3.8 GB |
+| 5 seconds (debug stress) | 15 minutes | 6,307,200 | ~1.73 GB | ~2.5–3.8 GB |
+| 5 minutes | 15 minutes | 105,120 | ~29 MB | ~42–63 MB |
+| 15 minutes | 1 hour | 35,040 | ~9.6 MB | ~14–21 MB |
 
-At the 5s/5s debug setting there are about **6.3 million sync cycles and up to 18.9 million HTTPS requests per year** (config fetch, config acknowledgement and location upload). Their protocol and radio overhead can exceed the JSON body size. Batching 5-second fixes every 15 minutes reduces sync cycles to about 35,000/year, with roughly 180 points or 45 KB of raw JSON per batch, but does not reduce GPS acquisitions or database rows. The phone's offline queue is capped at 500 points, so at a 5-second location interval it holds only about 42 minutes before the oldest unsent points are dropped.
+At the 5s/5s debug setting there are about **6.3 million sync cycles and up to 18.9 million HTTPS requests per year** (config fetch, config acknowledgement and location upload). Their protocol and radio overhead can exceed the JSON body size. Batching 5-second fixes every 15 minutes reduces sync cycles to about 35,000/year, with roughly 180 points or 50 KB of raw JSON per batch, but does not reduce location acquisitions or database rows. The phone's offline queue is capped at 500 points, so at a 5-second location interval it holds only about 42 minutes before the oldest unsent points are dropped.
 
 Gzip reduces repeated JSON keys most effectively in larger batches; a one-point batch may save little or even gain a few framing bytes. The precise ratio depends on the data and batch size, so benchmark with real traces before relying on a compression estimate.
 

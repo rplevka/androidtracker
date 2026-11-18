@@ -184,15 +184,15 @@ func (p *Postgres) RecordLocations(ctx context.Context, deviceID string, locatio
 			INSERT INTO locations (device_id, client_location_id, recorded_at, latitude, longitude,
 				accuracy_meters, altitude_meters, speed_meters_per_second, bearing_degrees, battery_percent, charging,
 				screen_on, device_locked, device_idle, power_save_mode, standby_bucket, network_type,
-				gps_fix_duration_ms, point)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+				gps_fix_duration_ms, location_source, point)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
 				ST_SetSRID(ST_MakePoint($5, $4), 4326)::geography)
 			ON CONFLICT (device_id, client_location_id) DO NOTHING`,
 			deviceID, location.ID, location.RecordedAt, location.Latitude, location.Longitude,
 			location.AccuracyM, location.AltitudeM, location.SpeedMPS, location.Bearing,
 			location.BatteryPercent, location.Charging, location.ScreenOn, location.DeviceLocked,
 			location.DeviceIdle, location.PowerSaveMode, location.StandbyBucket, location.NetworkType,
-			location.GPSFixDurationMS)
+			location.GPSFixDurationMS, location.LocationSource)
 		if err != nil {
 			return err
 		}
@@ -224,9 +224,10 @@ func (p *Postgres) ListDevices(ctx context.Context) ([]domain.Device, error) {
 			d.enabled, d.location_interval_seconds, d.sync_interval_seconds, d.sleep_duration_seconds,
 			d.gps_timeout_seconds, d.min_distance_meters, d.config_version,
 			l.client_location_id, l.latitude, l.longitude, l.accuracy_meters,
-			l.battery_percent, l.charging, l.recorded_at
+			l.battery_percent, l.charging, l.location_source, l.recorded_at
 		FROM devices d LEFT JOIN LATERAL (
-			SELECT client_location_id, latitude, longitude, accuracy_meters, battery_percent, charging, recorded_at
+			SELECT client_location_id, latitude, longitude, accuracy_meters, battery_percent, charging,
+				location_source, recorded_at
 			FROM locations WHERE device_id = d.id ORDER BY recorded_at DESC LIMIT 1
 		) l ON true ORDER BY d.created_at DESC`)
 	if err != nil {
@@ -240,6 +241,7 @@ func (p *Postgres) ListDevices(ctx context.Context) ([]domain.Device, error) {
 		var latitude, longitude, accuracy *float64
 		var batteryPercent *int16
 		var charging *bool
+		var locationSource *string
 		var deviceBattery *int16
 		var deviceCharging *bool
 		var appliedConfigVersion int64
@@ -254,7 +256,7 @@ func (p *Postgres) ListDevices(ctx context.Context) ([]domain.Device, error) {
 			&appliedSyncInterval, &appliedSleepDuration, &appliedGPSTimeout, &appliedMinDistance,
 			&d.Config.Enabled, &d.Config.LocationIntervalSeconds, &d.Config.SyncIntervalSeconds, &d.Config.SleepDurationSeconds,
 			&d.Config.GPSTimeoutSeconds, &d.Config.MinDistanceMeters, &d.Config.Version,
-			&locationID, &latitude, &longitude, &accuracy, &batteryPercent, &charging, &recordedAt); err != nil {
+			&locationID, &latitude, &longitude, &accuracy, &batteryPercent, &charging, &locationSource, &recordedAt); err != nil {
 			return nil, err
 		}
 		if deviceBattery != nil {
@@ -277,7 +279,8 @@ func (p *Postgres) ListDevices(ctx context.Context) ([]domain.Device, error) {
 		}
 		if locationID != nil {
 			d.CurrentLocation = &domain.Location{ID: *locationID, Latitude: *latitude,
-				Longitude: *longitude, AccuracyM: *accuracy, RecordedAt: *recordedAt}
+				Longitude: *longitude, AccuracyM: *accuracy, LocationSource: locationSource,
+				RecordedAt: *recordedAt}
 			if batteryPercent != nil {
 				value := int(*batteryPercent)
 				d.CurrentLocation.BatteryPercent = &value
@@ -342,7 +345,7 @@ func (p *Postgres) LocationHistory(ctx context.Context, deviceID string, from, t
 	rows, err := p.pool.Query(ctx, `SELECT client_location_id, latitude, longitude, accuracy_meters,
 		altitude_meters, speed_meters_per_second, bearing_degrees, battery_percent, charging,
 		screen_on, device_locked, device_idle, power_save_mode, standby_bucket, network_type,
-		gps_fix_duration_ms, recorded_at, received_at
+		gps_fix_duration_ms, location_source, recorded_at, received_at
 		FROM locations WHERE device_id = $1 AND recorded_at >= $2 AND recorded_at <= $3
 		ORDER BY recorded_at DESC LIMIT $4`, deviceID, from, to, limit)
 	if err != nil {
@@ -357,7 +360,7 @@ func (p *Postgres) LocationHistory(ctx context.Context, deviceID string, from, t
 			&location.Bearing, &location.BatteryPercent, &location.Charging,
 			&location.ScreenOn, &location.DeviceLocked, &location.DeviceIdle, &location.PowerSaveMode,
 			&location.StandbyBucket, &location.NetworkType, &location.GPSFixDurationMS,
-			&location.RecordedAt, &location.ReceivedAt); err != nil {
+			&location.LocationSource, &location.RecordedAt, &location.ReceivedAt); err != nil {
 			return nil, err
 		}
 		locations = append(locations, location)

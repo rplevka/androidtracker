@@ -88,6 +88,7 @@ func TestPostgresPostGISRoundTrip(t *testing.T) {
 	battery := 73
 	charging := false
 	gpsFixDuration := int64(2300)
+	locationSource := "network"
 	point.BatteryPercent = &battery
 	point.Charging = &charging
 	point.ScreenOn = &screenOn
@@ -97,6 +98,7 @@ func TestPostgresPostGISRoundTrip(t *testing.T) {
 	point.StandbyBucket = &standbyBucket
 	point.NetworkType = &networkType
 	point.GPSFixDurationMS = &gpsFixDuration
+	point.LocationSource = &locationSource
 	if err := repository.RecordLocations(ctx, id, []domain.Location{point, point}); err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +108,7 @@ func TestPostgresPostGISRoundTrip(t *testing.T) {
 	}
 	if len(history) != 1 || history[0].ID != point.ID || history[0].BatteryPercent == nil || *history[0].BatteryPercent != battery ||
 		history[0].GPSFixDurationMS == nil || *history[0].GPSFixDurationMS != gpsFixDuration ||
+		history[0].LocationSource == nil || *history[0].LocationSource != locationSource ||
 		history[0].ScreenOn == nil || *history[0].ScreenOn {
 		t.Fatalf("expected duplicate retry to persist one point with telemetry, got %#v", history)
 	}
@@ -119,6 +122,7 @@ func TestPostgresPostGISRoundTrip(t *testing.T) {
 			found = item.CurrentLocation != nil && item.CurrentLocation.Latitude == point.Latitude &&
 				item.CurrentLocation.BatteryPercent != nil && *item.CurrentLocation.BatteryPercent == battery &&
 				item.CurrentLocation.Charging != nil && !*item.CurrentLocation.Charging &&
+				item.CurrentLocation.LocationSource != nil && *item.CurrentLocation.LocationSource == locationSource &&
 				item.BatteryPercent != nil && *item.BatteryPercent == batteryHeartbeat &&
 				item.AppliedConfig != nil && item.AppliedConfig.Version == clientConfigVersion && item.AppliedAt != nil
 		}

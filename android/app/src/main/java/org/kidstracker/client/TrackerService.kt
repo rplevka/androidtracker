@@ -27,6 +27,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 
 class TrackerService : Service() {
@@ -34,9 +35,9 @@ class TrackerService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val preferences by lazy { getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE) }
     private var locationManager: LocationManager? = null
-    private var locationListener: LocationListener? = null
+    private val locationListeners = CopyOnWriteArrayList<LocationListener>()
     private var wakeLock: PowerManager.WakeLock? = null
-    private var cycleFinished = false
+    @Volatile private var cycleFinished = false
     private var scheduledWakeAt = 0L
     private var cycleStartedAt = 0L
 
@@ -156,32 +157,11 @@ class TrackerService : Service() {
         try {
             val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
             locationManager = manager
-            val listener = object : LocationListener {
-                override fun onLocationChanged(location: Location) {
-                    clearLocationListener()
-                    executor.execute {
-                        try {
-                            appendLocation(
-                                location,
-                                config,
-                                (SystemClock.elapsedRealtime() - locationStartedAt).coerceAtLeast(0L),
-                            )
-                        } catch (error: Exception) {
-                            markSyncFailure(error)
-                            finishCycle(nextWakeDelaySeconds(config, batteryPercent(), isCharging()))
-                            return@execute
-                        }
-                        finishLocationCycle(base, token, config, syncDue, configFetched,
-                            configAcknowledged, configError)
-                    }
-                }
-                @Deprecated("Deprecated by Android; retained for API 28 support")
-                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
-                override fun onProviderEnabled(provider: String) = Unit
-                override fun onProviderDisabled(provider: String) = Unit
-            }
-            locationListener = listener
-            if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            // Request both providers. GPS wins when it reports; otherwise the best
+            // network fix (cell/Wi-Fi) is used after the GPS timeout.
+            val gpsEnabled = isProviderEnabled(manager, LocationManager.GPS_PROVIDER)
+            val networkEnabled = isProviderEnabled(manager, LocationManager.NETWORK_PROVIDER)
+            if (!gpsEnabled && !networkEnabled) {
                 clearLocationListener()
                 executor.execute {
                     finishLocationCycle(base, token, config, syncDue, configFetched,
@@ -189,14 +169,76 @@ class TrackerService : Service() {
                 }
                 return
             }
-            manager.requestSingleUpdate(LocationManager.GPS_PROVIDER, listener, Looper.getMainLooper())
+
+            val bestFixes = mutableMapOf<String, Location>()
+            var completed = false
+            var gpsPending = false
+
+            fun complete(location: Location?) {
+                if (completed || cycleFinished) return
+                completed = true
+                clearLocationListener()
+                executor.execute {
+                    if (cycleFinished) return@execute
+                    if (location == null) {
+                        finishLocationCycle(base, token, config, syncDue, configFetched,
+                            configAcknowledged, configError)
+                        return@execute
+                    }
+                    try {
+                        appendLocation(
+                            location,
+                            config,
+                            (SystemClock.elapsedRealtime() - locationStartedAt).coerceAtLeast(0L),
+                        )
+                    } catch (error: Exception) {
+                        markSyncFailure(error)
+                        finishCycle(nextWakeDelaySeconds(config, batteryPercent(), isCharging()))
+                        return@execute
+                    }
+                    finishLocationCycle(base, token, config, syncDue, configFetched,
+                        configAcknowledged, configError)
+                }
+            }
+
+            fun listener(provider: String) = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    bestFixes[provider] = location
+                    if (provider == LocationManager.GPS_PROVIDER || !gpsPending) {
+                        complete(location)
+                    }
+                }
+                @Deprecated("Deprecated by Android; retained for API 28 support")
+                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+                override fun onProviderEnabled(provider: String) = Unit
+                override fun onProviderDisabled(provider: String) = Unit
+            }
+
+            fun request(provider: String): Boolean {
+                val updateListener = listener(provider)
+                locationListeners.add(updateListener)
+                return try {
+                    manager.requestSingleUpdate(provider, updateListener, Looper.getMainLooper())
+                    true
+                } catch (_: SecurityException) {
+                    locationListeners.remove(updateListener)
+                    false
+                } catch (_: Exception) {
+                    locationListeners.remove(updateListener)
+                    false
+                }
+            }
+
+            if (gpsEnabled) gpsPending = request(LocationManager.GPS_PROVIDER)
+            if (networkEnabled) request(LocationManager.NETWORK_PROVIDER)
+            if (locationListeners.isEmpty()) {
+                complete(null)
+                return
+            }
+
             mainHandler.postDelayed({
-                if (locationListener === listener) {
-                    clearLocationListener()
-						executor.execute {
-							finishLocationCycle(base, token, config, syncDue, configFetched,
-								configAcknowledged, configError)
-						}
+                if (!completed) {
+                    complete(bestFixes[LocationManager.GPS_PROVIDER] ?: bestFixes[LocationManager.NETWORK_PROVIDER])
                 }
             }, config.gpsTimeoutSeconds.coerceIn(5, 180) * 1000L)
         } catch (_: SecurityException) {
@@ -205,11 +247,17 @@ class TrackerService : Service() {
                     configAcknowledged, configError)
             }
         } catch (_: Exception) {
-			executor.execute {
-				finishLocationCycle(base, token, config, syncDue, configFetched,
-					configAcknowledged, configError)
-			}
+            executor.execute {
+                finishLocationCycle(base, token, config, syncDue, configFetched,
+                    configAcknowledged, configError)
+            }
         }
+    }
+
+    private fun isProviderEnabled(manager: LocationManager, provider: String): Boolean = try {
+        manager.isProviderEnabled(provider)
+    } catch (_: Exception) {
+        false
     }
 
     private fun finishLocationCycle(
@@ -293,18 +341,20 @@ class TrackerService : Service() {
         return if (lastAttempt <= 0L) now else lastAttempt + intervalSeconds.coerceAtLeast(1) * 1000L
     }
 
-    private fun appendLocation(location: Location, config: TrackerConfig, gpsFixDurationMS: Long) {
+    private fun appendLocation(location: Location, config: TrackerConfig, fixDurationMS: Long) {
         val previousLat = preferences.getFloat(PREF_LAST_LAT, Float.NaN)
         val previousLon = preferences.getFloat(PREF_LAST_LON, Float.NaN)
         if (!previousLat.isNaN() && !previousLon.isNaN()) {
             val previous = Location("last").apply { latitude = previousLat.toDouble(); longitude = previousLon.toDouble() }
             if (!CyclePolicy.shouldRecord(location.distanceTo(previous), config.minDistanceMeters)) return
         }
+        val source = LocationSource.fromProvider(location.provider)
         val item = JSONObject()
             .put("id", UUID.randomUUID().toString())
             .put("latitude", location.latitude)
             .put("longitude", location.longitude)
             .put("accuracy_meters", location.accuracy.toDouble())
+            .put("location_source", source)
             .put("recorded_at", Instant.ofEpochMilli(location.time).toString())
         if (location.hasAltitude()) item.put("altitude_meters", location.altitude)
         if (location.hasSpeed()) item.put("speed_meters_per_second", location.speed)
@@ -313,7 +363,7 @@ class TrackerService : Service() {
         if (battery in 0..100) item.put("battery_percent", battery)
         item.put("charging", isCharging())
         DeviceTelemetry.addLocationFields(this, item)
-        item.put("gps_fix_duration_ms", gpsFixDurationMS.coerceIn(0L, 600000L))
+        item.put("gps_fix_duration_ms", fixDurationMS.coerceIn(0L, 600000L))
         val queue = JSONArray(preferences.getString(PREF_QUEUE, "[]"))
         queue.put(item)
         val bounded = JSONArray()
@@ -322,6 +372,7 @@ class TrackerService : Service() {
             .putFloat(PREF_LAST_LAT, location.latitude.toFloat())
             .putFloat(PREF_LAST_LON, location.longitude.toFloat())
             .putLong(PREF_LAST_LOCATION_AT, location.time)
+            .putString(PREF_LAST_LOCATION_SOURCE, source)
             .apply()
     }
 
@@ -548,10 +599,10 @@ class TrackerService : Service() {
     }
 
     private fun clearLocationListener() {
-        locationListener?.let { listener ->
+        for (listener in locationListeners) {
             try { locationManager?.removeUpdates(listener) } catch (_: SecurityException) { }
         }
-        locationListener = null
+        locationListeners.clear()
     }
 
     @Synchronized
@@ -609,11 +660,11 @@ class TrackerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID).setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .setContentTitle("Kidstracker").setContentText("Checking location").setContentIntent(openApp).setOngoing(true).build()
+                .setContentTitle("Kidstracker").setContentText("Checking GPS/network location").setContentIntent(openApp).setOngoing(true).build()
         } else {
             @Suppress("DEPRECATION")
             Notification.Builder(this).setSmallIcon(android.R.drawable.ic_menu_mylocation)
-                .setContentTitle("Kidstracker").setContentText("Checking location").setContentIntent(openApp).setOngoing(true).build()
+                .setContentTitle("Kidstracker").setContentText("Checking GPS/network location").setContentIntent(openApp).setOngoing(true).build()
         }
     }
 
@@ -643,6 +694,7 @@ class TrackerService : Service() {
         const val PREF_LAST_LOCATION_ATTEMPT_AT = "last_location_attempt_at"
         const val PREF_NEXT_WAKE = "next_wake"
         const val PREF_LAST_LOCATION_AT = "last_location_at"
+        const val PREF_LAST_LOCATION_SOURCE = "last_location_source"
         const val PREF_BATTERY_PERCENT = "battery_percent"
         const val PREF_CHARGING = "charging"
         const val PREF_LAST_LAT = "last_latitude"

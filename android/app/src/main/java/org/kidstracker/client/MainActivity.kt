@@ -162,6 +162,7 @@ class MainActivity : Activity() {
         val charging = preferences.getBoolean(TrackerService.PREF_CHARGING, false)
         val lastSync = preferences.getLong(TrackerService.PREF_LAST_SYNC_AT, 0L)
         val lastLocation = preferences.getLong(TrackerService.PREF_LAST_LOCATION_AT, 0L)
+        val lastLocationSource = preferences.getString(TrackerService.PREF_LAST_LOCATION_SOURCE, null)
         val nextWake = preferences.getLong(TrackerService.PREF_NEXT_WAKE, 0L)
 
         statusDetails.text = buildString {
@@ -189,7 +190,8 @@ class MainActivity : Activity() {
             val error = preferences.getString(TrackerService.PREF_SYNC_ERROR, null)
             if (!error.isNullOrBlank()) appendLine("Last error: $error")
             appendLine("Queued locations: $queueSize")
-            appendLine("Last location: ${formatTime(lastLocation)}")
+            appendLine("Last location: ${formatTime(lastLocation)}" +
+                if (lastLocationSource.isNullOrBlank()) "" else " via ${LocationSource.label(lastLocationSource)}")
             append("Next scheduled wake: ${formatTime(nextWake)}")
         }
     }

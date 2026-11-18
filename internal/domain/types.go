@@ -41,6 +41,7 @@ type Location struct {
 	StandbyBucket    *string   `json:"standby_bucket,omitempty"`
 	NetworkType      *string   `json:"network_type,omitempty"`
 	GPSFixDurationMS *int64    `json:"gps_fix_duration_ms,omitempty"`
+	LocationSource   *string   `json:"location_source,omitempty"`
 	RecordedAt       time.Time `json:"recorded_at"`
 	ReceivedAt       time.Time `json:"received_at,omitempty"`
 }
