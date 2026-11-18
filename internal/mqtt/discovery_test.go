@@ -111,4 +111,41 @@ func TestTopicSanitization(t *testing.T) {
 	if topics.DiscoveryPath != "ha/homeassistant" {
 		t.Fatalf("discovery path = %q", topics.DiscoveryPath)
 	}
+	if topics.ConfigSet != "my_tracker/a_b/config/set" {
+		t.Fatalf("config set topic = %q", topics.ConfigSet)
+	}
+}
+
+func TestDiscoveryPublishesWritableConfigControls(t *testing.T) {
+	settings := domain.DefaultMQTTSettings()
+	settings.BaseTopic = "kidstracker"
+	messages := discoveryMessages(settings, testDevice())
+	var switchConfig, numberConfig map[string]any
+	for topic, payload := range messages {
+		if strings.HasSuffix(topic, "_tracking_control/config") {
+			if err := json.Unmarshal([]byte(payload), &switchConfig); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if strings.HasSuffix(topic, "_location_interval_set/config") {
+			if err := json.Unmarshal([]byte(payload), &numberConfig); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if switchConfig == nil || numberConfig == nil {
+		t.Fatal("writable config discovery entities are missing")
+	}
+	if switchConfig["command_topic"] != "kidstracker/abc123/config/set" ||
+		switchConfig["state_topic"] != "kidstracker/abc123/config" ||
+		switchConfig["payload_on"] != `{"enabled":true}` ||
+		switchConfig["payload_off"] != `{"enabled":false}` {
+		t.Fatalf("unexpected tracking control discovery: %#v", switchConfig)
+	}
+	if numberConfig["command_topic"] != "kidstracker/abc123/config/set" ||
+		numberConfig["state_topic"] != "kidstracker/abc123/config" ||
+		numberConfig["command_template"] != `{"location_interval_seconds": {{ value | int }}}` ||
+		numberConfig["min"] != float64(5) || numberConfig["max"] != float64(86400) {
+		t.Fatalf("unexpected location interval control discovery: %#v", numberConfig)
+	}
 }

@@ -64,6 +64,7 @@ type Topics struct {
 	Location      string
 	Telemetry     string
 	Config        string
+	ConfigSet     string
 	Availability  string
 	DiscoveryPath string
 }
@@ -77,6 +78,7 @@ func TopicsFor(settings domain.MQTTSettings, deviceID string) Topics {
 		Location:      base + "/location",
 		Telemetry:     base + "/telemetry",
 		Config:        base + "/config",
+		ConfigSet:     base + "/config/set",
 		Availability:  normalizeBaseTopic(settings.BaseTopic) + "/status",
 		DiscoveryPath: prefix,
 	}
@@ -135,6 +137,37 @@ func discoveryMessages(settings domain.MQTTSettings, device domain.Device) map[s
 			payload[key] = item
 		}
 		add("binary_sensor", objectID, topics.Config, payload)
+	}
+	configNumber := func(objectID, name, template, commandTemplate string, extra map[string]any) {
+		payload := map[string]any{
+			"state_topic":      topics.Config,
+			"value_template":   template,
+			"command_topic":    topics.ConfigSet,
+			"command_template": commandTemplate,
+			"name":             name,
+			"entity_category":  "config",
+		}
+		for key, item := range extra {
+			payload[key] = item
+		}
+		add("number", objectID, topics.Config, payload)
+	}
+	configSwitch := func(objectID, name string, extra map[string]any) {
+		payload := map[string]any{
+			"state_topic":     topics.Config,
+			"value_template":  "{{ 'ON' if value_json.enabled else 'OFF' }}",
+			"command_topic":   topics.ConfigSet,
+			"payload_on":      `{"enabled":true}`,
+			"payload_off":     `{"enabled":false}`,
+			"state_on":        "ON",
+			"state_off":       "OFF",
+			"name":            name,
+			"entity_category": "config",
+		}
+		for key, item := range extra {
+			payload[key] = item
+		}
+		add("switch", objectID, topics.Config, payload)
 	}
 
 	add("device_tracker", "tracker", topics.Location, map[string]any{
@@ -225,6 +258,34 @@ func discoveryMessages(settings domain.MQTTSettings, device domain.Device) map[s
 		"unit_of_measurement": "s", "device_class": "duration", "state_class": "measurement",
 		"entity_category": "diagnostic",
 	})
+	configSwitch("tracking_control", "Tracking control", map[string]any{
+		"icon": "mdi:map-marker-path",
+	})
+	configNumber("location_interval_set", "Location interval (set)", "{{ value_json.location_interval_seconds }}",
+		`{"location_interval_seconds": {{ value | int }}}`, map[string]any{
+			"min": 5, "max": 86400, "step": 1, "mode": "box",
+			"unit_of_measurement": "s", "device_class": "duration", "icon": "mdi:timer-outline",
+		})
+	configNumber("sync_interval_set", "Sync interval (set)", "{{ value_json.sync_interval_seconds }}",
+		`{"sync_interval_seconds": {{ value | int }}}`, map[string]any{
+			"min": 5, "max": 86400, "step": 1, "mode": "box",
+			"unit_of_measurement": "s", "device_class": "duration", "icon": "mdi:timer-sync-outline",
+		})
+	configNumber("disabled_poll_interval_set", "Disabled poll interval (set)", "{{ value_json.sleep_duration_seconds }}",
+		`{"sleep_duration_seconds": {{ value | int }}}`, map[string]any{
+			"min": 10, "max": 604800, "step": 1, "mode": "box",
+			"unit_of_measurement": "s", "device_class": "duration", "icon": "mdi:sleep",
+		})
+	configNumber("gps_timeout_set", "GPS timeout (set)", "{{ value_json.gps_timeout_seconds }}",
+		`{"gps_timeout_seconds": {{ value | int }}}`, map[string]any{
+			"min": 5, "max": 180, "step": 1, "mode": "box",
+			"unit_of_measurement": "s", "device_class": "duration", "icon": "mdi:crosshairs-gps",
+		})
+	configNumber("min_distance_set", "Minimum distance (set)", "{{ value_json.min_distance_meters }}",
+		`{"min_distance_meters": {{ value }}}`, map[string]any{
+			"min": 0, "max": 10000, "step": 1, "mode": "box",
+			"unit_of_measurement": "m", "device_class": "distance", "icon": "mdi:map-marker-distance",
+		})
 	return messages
 }
 

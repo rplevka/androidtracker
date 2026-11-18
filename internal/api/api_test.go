@@ -507,6 +507,39 @@ func TestAdminCanUpdateValidConfiguration(t *testing.T) {
 	}
 }
 
+func TestAdminCanPartiallyUpdateConfiguration(t *testing.T) {
+	repo := &fakeRepository{config: domain.DefaultConfig()}
+	server := New(repo, "admin-secret")
+	body := `{"enabled":false,"sync_interval_seconds":300}`
+	request := httptest.NewRequest(http.MethodPatch, "/api/admin/devices/device-1/config", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if repo.config.Enabled || repo.config.SyncIntervalSeconds != 300 || repo.config.LocationIntervalSeconds != 900 ||
+		repo.config.GPSTimeoutSeconds != 60 || repo.config.Version != 2 {
+		t.Fatalf("partial configuration was not merged correctly: %#v", repo.config)
+	}
+}
+
+func TestConfigUpdateRejectsInvalidPartialValue(t *testing.T) {
+	repo := &fakeRepository{config: domain.DefaultConfig()}
+	server := New(repo, "admin-secret")
+	body := `{"gps_timeout_seconds":1}`
+	request := httptest.NewRequest(http.MethodPatch, "/api/admin/devices/device-1/config", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if repo.config.GPSTimeoutSeconds != 60 {
+		t.Fatalf("invalid partial update changed the config: %#v", repo.config)
+	}
+}
+
 func TestConfigUpdateAcceptsRequestedMinimumPollingIntervals(t *testing.T) {
 	repo := &fakeRepository{config: domain.DefaultConfig()}
 	server := New(repo, "admin-secret")

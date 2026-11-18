@@ -24,6 +24,39 @@ func DefaultConfig() Config {
 	}
 }
 
+// ConfigPatch contains optional config fields. Nil fields keep their current value.
+type ConfigPatch struct {
+	Enabled                 *bool    `json:"enabled,omitempty"`
+	LocationIntervalSeconds *int     `json:"location_interval_seconds,omitempty"`
+	SyncIntervalSeconds     *int     `json:"sync_interval_seconds,omitempty"`
+	SleepDurationSeconds    *int     `json:"sleep_duration_seconds,omitempty"`
+	GPSTimeoutSeconds       *int     `json:"gps_timeout_seconds,omitempty"`
+	MinDistanceMeters       *float64 `json:"min_distance_meters,omitempty"`
+	Version                 *int64   `json:"version,omitempty"`
+}
+
+func (p ConfigPatch) Apply(current Config) Config {
+	if p.Enabled != nil {
+		current.Enabled = *p.Enabled
+	}
+	if p.LocationIntervalSeconds != nil {
+		current.LocationIntervalSeconds = *p.LocationIntervalSeconds
+	}
+	if p.SyncIntervalSeconds != nil {
+		current.SyncIntervalSeconds = *p.SyncIntervalSeconds
+	}
+	if p.SleepDurationSeconds != nil {
+		current.SleepDurationSeconds = *p.SleepDurationSeconds
+	}
+	if p.GPSTimeoutSeconds != nil {
+		current.GPSTimeoutSeconds = *p.GPSTimeoutSeconds
+	}
+	if p.MinDistanceMeters != nil {
+		current.MinDistanceMeters = *p.MinDistanceMeters
+	}
+	return current
+}
+
 type Location struct {
 	ID               string    `json:"id"`
 	Latitude         float64   `json:"latitude"`

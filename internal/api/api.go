@@ -389,19 +389,15 @@ func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
-	var config domain.Config
-	if !decodeJSON(w, r, &config) {
+	var patch domain.ConfigPatch
+	if !decodeJSON(w, r, &patch) {
 		return
 	}
-	if config.LocationIntervalSeconds < 5 || config.LocationIntervalSeconds > 86400 ||
-		config.SyncIntervalSeconds < 5 || config.SyncIntervalSeconds > 86400 ||
-		config.SleepDurationSeconds < 10 || config.SleepDurationSeconds > 604800 ||
-		config.GPSTimeoutSeconds < 5 || config.GPSTimeoutSeconds > 180 ||
-		config.MinDistanceMeters < 0 || config.MinDistanceMeters > 10000 {
-		writeError(w, http.StatusBadRequest, "configuration values are outside supported ranges")
+	device, err := s.ApplyConfigPatch(r.Context(), r.PathValue("id"), patch)
+	if errors.Is(err, errInvalidConfig) {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	device, err := s.repo.UpdateConfig(r.Context(), r.PathValue("id"), config)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "device not found")
 		return
@@ -414,6 +410,33 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		s.mqtt.PublishConfig(device)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"device": device})
+}
+
+var errInvalidConfig = errors.New("configuration values are outside supported ranges")
+
+// ApplyConfigPatch merges a partial config into the device's current config and
+// persists it. It is shared by the admin API and MQTT/Home Assistant commands.
+func (s *Server) ApplyConfigPatch(ctx context.Context, deviceID string, patch domain.ConfigPatch) (domain.Device, error) {
+	current, err := s.repo.GetConfig(ctx, deviceID)
+	if err != nil {
+		return domain.Device{}, err
+	}
+	config := patch.Apply(current)
+	if err := validateConfig(config); err != nil {
+		return domain.Device{}, err
+	}
+	return s.repo.UpdateConfig(ctx, deviceID, config)
+}
+
+func validateConfig(config domain.Config) error {
+	if config.LocationIntervalSeconds < 5 || config.LocationIntervalSeconds > 86400 ||
+		config.SyncIntervalSeconds < 5 || config.SyncIntervalSeconds > 86400 ||
+		config.SleepDurationSeconds < 10 || config.SleepDurationSeconds > 604800 ||
+		config.GPSTimeoutSeconds < 5 || config.GPSTimeoutSeconds > 180 ||
+		config.MinDistanceMeters < 0 || config.MinDistanceMeters > 10000 {
+		return errInvalidConfig
+	}
+	return nil
 }
 
 func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {

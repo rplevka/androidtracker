@@ -97,7 +97,7 @@ POST  /api/admin/devices/{id}/revoke
 DELETE /api/admin/devices/{id}
 ```
 
-Configuration bounds are `location_interval_seconds` 5–86400 seconds, `sync_interval_seconds` 5–86400 seconds, `sleep_duration_seconds` 10–604800 seconds, and GPS timeout 5–180 seconds. The short 5/10-second minima are supported for debugging but can consume substantial battery. Android Doze and alarm quotas can still defer background wakes. Location interval controls location fixes (GPS first, with network fallback) while enabled; sync interval controls batch upload and config polling; sleep duration controls config polling while tracking is disabled. Each client location ID is unique per device, so retried batches do not create duplicate history points.
+Configuration bounds are `location_interval_seconds` 5–86400 seconds, `sync_interval_seconds` 5–86400 seconds, `sleep_duration_seconds` 10–604800 seconds, and GPS timeout 5–180 seconds. `PATCH` accepts a partial configuration object; omitted fields keep their current values. The short 5/10-second minima are supported for debugging but can consume substantial battery. Android Doze and alarm quotas can still defer background wakes. Location interval controls location fixes (GPS first, with network fallback) while enabled; sync interval controls batch upload and config polling; sleep duration controls config polling while tracking is disabled. Each client location ID is unique per device, so retried batches do not create duplicate history points.
 
 Deleting a device is permanent: it removes the device and cascades to all of its stored location history. The Android client will detect the invalid token at its next sync and show enrollment again.
 
@@ -130,6 +130,14 @@ At a 5-second sync interval, telemetry adds substantial database growth and requ
 Configure the broker under **MQTT / Home Assistant** in the admin page. The backend supports any MQTT 3.1.1/5-compatible broker; point it at Home Assistant's Mosquitto broker (typically `homeassistant.local:1883`). Discovery is optional, but enabled by default with prefix `homeassistant`. The MQTT password is encrypted at rest using a key derived from `ADMIN_TOKEN`; changes to `ADMIN_TOKEN` require re-entering the MQTT password. The API has a separate non-internal egress network for reaching a LAN MQTT broker while the database and proxy networks remain isolated.
 
 The backend publishes a retained Home Assistant device tracker (`source_type: gps`) plus sensors/binary sensors for battery, charging, location accuracy, speed, altitude, bearing, last fix, location source, screen, lock, Doze, power save, network, standby bucket, fix duration, battery temperature, wake delay, sync duration, queue size, GPS availability, tracking enabled and configured intervals. The tracker's JSON attributes include `location_source` (`gps`, `network`, or `fused`), and a dedicated **Location source** sensor exposes the same value. `fused` means the fix came from Play Services' fused provider. Home Assistant uses the tracker's GPS attributes and its zones to derive zone state.
+
+The integration also publishes writable Home Assistant entities: a **Tracking control** switch and `(set)` number entities for location interval, sync interval, disabled poll interval, GPS timeout, and minimum distance. They publish partial config JSON to `<base_topic>/<device_id>/config/set`, for example:
+
+```json
+{"sync_interval_seconds": 300}
+```
+
+The backend applies the same bounds as the admin API, increments the config version, and republishes the retained config state. The device picks the change up on its next config fetch, so a change can take up to the currently configured sync interval (or the sleep interval while tracking is disabled). The existing read-only config sensors remain available for visibility. Anyone who can publish to the MQTT broker can change these settings, so secure the broker and use per-client ACLs.
 
 There is no `gps` sensor device class: use a `device_tracker` with `source_type: gps`, which this integration does. To associate it with a person, create/edit the person in Home Assistant (**Settings → People**) and select the discovered `device_tracker` entity; MQTT discovery does not assign people automatically.
 

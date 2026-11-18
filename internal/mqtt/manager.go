@@ -1,6 +1,7 @@
 package mqtt
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -20,6 +21,15 @@ type job struct {
 	deviceID string
 }
 
+type commandJob struct {
+	deviceID string
+	patch    domain.ConfigPatch
+}
+
+type ConfigController interface {
+	ApplyConfigPatch(context.Context, string, domain.ConfigPatch) (domain.Device, error)
+}
+
 type Manager struct {
 	ctx    context.Context
 	logger *slog.Logger
@@ -37,22 +47,36 @@ type Manager struct {
 	telemetry       map[string]domain.Telemetry
 	configs         map[string]domain.Config
 	discovered      map[string]bool
+	commandTopics   map[string]string
+	controller      ConfigController
 	out             chan job
+	commands        chan commandJob
 }
 
 func NewManager(ctx context.Context, logger *slog.Logger) *Manager {
 	manager := &Manager{
-		ctx:        ctx,
-		logger:     logger,
-		devices:    make(map[string]domain.Device),
-		locations:  make(map[string]domain.Location),
-		telemetry:  make(map[string]domain.Telemetry),
-		configs:    make(map[string]domain.Config),
-		discovered: make(map[string]bool),
-		out:        make(chan job, 256),
+		ctx:           ctx,
+		logger:        logger,
+		devices:       make(map[string]domain.Device),
+		locations:     make(map[string]domain.Location),
+		telemetry:     make(map[string]domain.Telemetry),
+		configs:       make(map[string]domain.Config),
+		discovered:    make(map[string]bool),
+		commandTopics: make(map[string]string),
+		out:           make(chan job, 256),
+		commands:      make(chan commandJob, 64),
 	}
 	go manager.run()
+	go manager.commandLoop()
 	return manager
+}
+
+// SetConfigController wires the shared config-patch implementation used by the
+// admin API into MQTT/Home Assistant commands.
+func (m *Manager) SetConfigController(controller ConfigController) {
+	m.mu.Lock()
+	m.controller = controller
+	m.mu.Unlock()
 }
 
 func (m *Manager) Configure(settings domain.MQTTSettings, password string) error {
@@ -66,6 +90,7 @@ func (m *Manager) Configure(settings domain.MQTTSettings, password string) error
 	m.connected = false
 	m.lastError = ""
 	m.discovered = make(map[string]bool)
+	m.commandTopics = make(map[string]string)
 	m.mu.Unlock()
 	if oldClient != nil {
 		oldClient.Disconnect(250)
@@ -120,6 +145,9 @@ func (m *Manager) clientOptions(settings domain.MQTTSettings, password string, g
 		SetCleanSession(true).
 		SetOrderMatters(false).
 		SetWill(normalizeBaseTopic(settings.BaseTopic)+"/status", "offline", 1, true).
+		SetDefaultPublishHandler(func(_ paho.Client, message paho.Message) {
+			m.handleCommandMessage(message)
+		}).
 		SetOnConnectHandler(func(client paho.Client) {
 			m.onConnected(client, generation)
 		}).
@@ -188,9 +216,11 @@ func (m *Manager) onConnected(client paho.Client, generation uint64) {
 	m.lastError = ""
 	m.lastConnectedAt = &now
 	m.discovered = make(map[string]bool)
+	m.commandTopics = make(map[string]string)
 	m.mu.Unlock()
 	m.logger.Info("MQTT connected", "host", m.currentSettings().Host, "port", m.currentSettings().Port)
 	m.publish([]string{normalizeBaseTopic(m.currentSettings().BaseTopic) + "/status"}, []byte("online"), true)
+	m.subscribeAllCommands(client)
 	m.enqueueAll()
 }
 
@@ -210,6 +240,7 @@ func (m *Manager) onConnectionLost(client paho.Client, generation uint64, err er
 		m.lastError = err.Error()
 	}
 	m.discovered = make(map[string]bool)
+	m.commandTopics = make(map[string]string)
 	m.mu.Unlock()
 	if err != nil {
 		m.logger.Warn("MQTT connection lost; Paho will reconnect", "error", err)
@@ -248,6 +279,7 @@ func (m *Manager) PublishDevice(device domain.Device) {
 	m.devices[device.ID] = device
 	m.configs[device.ID] = device.Config
 	m.mu.Unlock()
+	m.ensureCommandSubscription(device.ID)
 	m.enqueue(device.ID)
 }
 
@@ -272,6 +304,7 @@ func (m *Manager) PublishConfig(device domain.Device) {
 	m.devices[device.ID] = device
 	m.configs[device.ID] = device.Config
 	m.mu.Unlock()
+	m.ensureCommandSubscription(device.ID)
 	m.enqueue(device.ID)
 }
 
@@ -294,6 +327,7 @@ func (m *Manager) RemoveDevice(deviceID string) {
 	delete(m.telemetry, deviceID)
 	delete(m.configs, deviceID)
 	delete(m.discovered, deviceID)
+	delete(m.commandTopics, TopicsFor(settings, deviceID).ConfigSet)
 	m.mu.Unlock()
 }
 
@@ -325,6 +359,109 @@ func (m *Manager) run() {
 			m.publishDevice(item.deviceID)
 		}
 	}
+}
+
+func (m *Manager) commandLoop() {
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case command := <-m.commands:
+			m.applyCommand(command)
+		}
+	}
+}
+
+func (m *Manager) subscribeAllCommands(client paho.Client) {
+	m.mu.Lock()
+	if m.client != client || !m.connected || !m.settings.Enabled {
+		m.mu.Unlock()
+		return
+	}
+	settings := m.settings
+	topics := make([]string, 0, len(m.devices))
+	m.commandTopics = make(map[string]string, len(m.devices))
+	for deviceID := range m.devices {
+		topic := TopicsFor(settings, deviceID).ConfigSet
+		m.commandTopics[topic] = deviceID
+		topics = append(topics, topic)
+	}
+	m.mu.Unlock()
+	for _, topic := range topics {
+		client.Subscribe(topic, 1, nil)
+	}
+}
+
+func (m *Manager) ensureCommandSubscription(deviceID string) {
+	m.mu.Lock()
+	client := m.client
+	connected := m.connected
+	settings := m.settings
+	if client == nil || !connected || !settings.Enabled {
+		m.mu.Unlock()
+		return
+	}
+	topic := TopicsFor(settings, deviceID).ConfigSet
+	if _, exists := m.commandTopics[topic]; exists {
+		m.mu.Unlock()
+		return
+	}
+	m.commandTopics[topic] = deviceID
+	m.mu.Unlock()
+	token := client.Subscribe(topic, 1, nil)
+	if token.WaitTimeout(2*time.Second) && token.Error() != nil {
+		m.setError(token.Error())
+		m.mu.Lock()
+		delete(m.commandTopics, topic)
+		m.mu.Unlock()
+	}
+}
+
+func (m *Manager) handleCommandMessage(message paho.Message) {
+	if message == nil || message.Retained() {
+		return
+	}
+	m.mu.RLock()
+	deviceID, exists := m.commandTopics[message.Topic()]
+	m.mu.RUnlock()
+	if !exists {
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(message.Payload()))
+	decoder.DisallowUnknownFields()
+	var patch domain.ConfigPatch
+	if err := decoder.Decode(&patch); err != nil {
+		m.logger.Warn("invalid MQTT config command", "topic", message.Topic(), "error", err)
+		return
+	}
+	select {
+	case m.commands <- commandJob{deviceID: deviceID, patch: patch}:
+	default:
+		m.logger.Warn("MQTT config command queue is full", "device", deviceID)
+	}
+}
+
+func (m *Manager) applyCommand(command commandJob) {
+	m.mu.RLock()
+	controller := m.controller
+	m.mu.RUnlock()
+	if controller == nil {
+		m.logger.Warn("MQTT config command received before the controller is ready", "device", command.deviceID)
+		return
+	}
+	device, err := controller.ApplyConfigPatch(m.ctx, command.deviceID, command.patch)
+	if err != nil {
+		m.logger.Warn("MQTT config command failed", "device", command.deviceID, "error", err)
+		// Republish the current retained state so Home Assistant snaps back.
+		m.enqueue(command.deviceID)
+		return
+	}
+	m.mu.Lock()
+	m.devices[device.ID] = device
+	m.configs[device.ID] = device.Config
+	m.mu.Unlock()
+	m.logger.Info("applied MQTT config command", "device", device.ID, "version", device.Config.Version)
+	m.enqueue(device.ID)
 }
 
 func (m *Manager) publishDevice(deviceID string) {

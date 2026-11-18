@@ -56,6 +56,8 @@ func main() {
 		os.Exit(1)
 	}
 	mqttManager := mqtt.NewManager(ctx, logger)
+	apiServer := api.New(repo, adminToken, mqttManager)
+	mqttManager.SetConfigController(apiServer)
 	record, err := repo.GetMQTTSettings(ctx)
 	if err != nil {
 		logger.Warn("could not load MQTT settings", "error", err)
@@ -82,7 +84,7 @@ func main() {
 		}
 	}
 
-	server := &http.Server{Addr: address, Handler: api.New(repo, adminToken, mqttManager), ReadHeaderTimeout: 5 * time.Second,
+	server := &http.Server{Addr: address, Handler: apiServer, ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		logger.Info("server listening", "address", address)

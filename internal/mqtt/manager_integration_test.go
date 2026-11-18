@@ -117,6 +117,18 @@ func TestManagerPublishesDiscoveryAndStates(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+
+	controller := &fakeConfigController{device: device}
+	manager.SetConfigController(controller)
+	token = subscriber.Publish(base+"/"+device.ID+"/config/set", 1, false, `{"sync_interval_seconds":300}`)
+	if !token.WaitTimeout(5*time.Second) || token.Error() != nil {
+		t.Fatalf("config command publish failed: %v", token.Error())
+	}
+	waitForPayload(t, &mu, messages, base+"/"+device.ID+"/config", `"sync_interval_seconds":300`, 5*time.Second)
+	calls, deviceID, patch, _ := controller.snapshot()
+	if calls != 1 || deviceID != device.ID || patch.SyncIntervalSeconds == nil || *patch.SyncIntervalSeconds != 300 {
+		t.Fatalf("config command was not applied: calls=%d id=%s patch=%#v", calls, deviceID, patch)
+	}
 }
 
 func TestManagerReconnectsAfterBrokerOutage(t *testing.T) {
