@@ -8,6 +8,7 @@ class LocationSourceTest {
     fun mapsAndroidProvidersToStableWireValues() {
         assertEquals("gps", LocationSource.fromProvider("gps"))
         assertEquals("network", LocationSource.fromProvider("network"))
+        assertEquals("fused", LocationSource.fromProvider("fused"))
         assertEquals("gps", LocationSource.fromProvider(" GPS "))
         assertEquals("unknown", LocationSource.fromProvider(null))
         assertEquals("unknown", LocationSource.fromProvider(""))
@@ -17,6 +18,7 @@ class LocationSourceTest {
     fun labelsFallbackClearly() {
         assertEquals("GPS", LocationSource.label("gps"))
         assertEquals("network (cell/Wi-Fi)", LocationSource.label("network"))
+        assertEquals("fused (cell/Wi-Fi)", LocationSource.label("fused"))
         assertEquals("unknown", LocationSource.label(null))
     }
 }

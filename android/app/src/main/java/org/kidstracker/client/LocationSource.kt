@@ -18,6 +18,7 @@ object LocationSource {
     fun label(source: String?): String = when (source) {
         GPS -> "GPS"
         NETWORK -> "network (cell/Wi-Fi)"
+        "fused" -> "fused (cell/Wi-Fi)"
         null, "" -> "unknown"
         else -> source
     }

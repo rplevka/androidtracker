@@ -117,8 +117,7 @@ class TrackerService : Service() {
             )
         if (locationDue) preferences.edit().putLong(PREF_LAST_LOCATION_ATTEMPT_AT, now).apply()
         val lowBattery = !charging && battery in 0..5
-        if (locationDue && !lowBattery &&
-            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+        if (locationDue && !lowBattery && hasLocationPermission()) {
             mainHandler.post {
                 requestLocation(base, token, config, syncDue, configFetched, configAcknowledged, configError)
             }
@@ -158,17 +157,10 @@ class TrackerService : Service() {
             val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
             locationManager = manager
             // Request both providers. GPS wins when it reports; otherwise the best
-            // network fix (cell/Wi-Fi) is used after the GPS timeout.
+            // network fix (cell/Wi-Fi) is used after the GPS timeout. The network
+            // provider is attempted even when the platform reports it disabled:
+            // some ROMs expose it as a Play Services overlay provider.
             val gpsEnabled = isProviderEnabled(manager, LocationManager.GPS_PROVIDER)
-            val networkEnabled = isProviderEnabled(manager, LocationManager.NETWORK_PROVIDER)
-            if (!gpsEnabled && !networkEnabled) {
-                clearLocationListener()
-                executor.execute {
-                    finishLocationCycle(base, token, config, syncDue, configFetched,
-                        configAcknowledged, configError)
-                }
-                return
-            }
 
             val bestFixes = mutableMapOf<String, Location>()
             var completed = false
@@ -230,7 +222,8 @@ class TrackerService : Service() {
             }
 
             if (gpsEnabled) gpsPending = request(LocationManager.GPS_PROVIDER)
-            if (networkEnabled) request(LocationManager.NETWORK_PROVIDER)
+            request(LocationManager.NETWORK_PROVIDER)
+            request(FUSED_PROVIDER)
             if (locationListeners.isEmpty()) {
                 complete(null)
                 return
@@ -238,7 +231,11 @@ class TrackerService : Service() {
 
             mainHandler.postDelayed({
                 if (!completed) {
-                    complete(bestFixes[LocationManager.GPS_PROVIDER] ?: bestFixes[LocationManager.NETWORK_PROVIDER])
+                    complete(
+                        bestFixes[LocationManager.GPS_PROVIDER]
+                            ?: bestFixes[LocationManager.NETWORK_PROVIDER]
+                            ?: bestFixes[FUSED_PROVIDER],
+                    )
                 }
             }, config.gpsTimeoutSeconds.coerceIn(5, 180) * 1000L)
         } catch (_: SecurityException) {
@@ -259,6 +256,10 @@ class TrackerService : Service() {
     } catch (_: Exception) {
         false
     }
+
+    private fun hasLocationPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     private fun finishLocationCycle(
         base: String,
@@ -695,6 +696,7 @@ class TrackerService : Service() {
         const val PREF_NEXT_WAKE = "next_wake"
         const val PREF_LAST_LOCATION_AT = "last_location_at"
         const val PREF_LAST_LOCATION_SOURCE = "last_location_source"
+        private const val FUSED_PROVIDER = "fused"
         const val PREF_BATTERY_PERCENT = "battery_percent"
         const val PREF_CHARGING = "charging"
         const val PREF_LAST_LAT = "last_latitude"
