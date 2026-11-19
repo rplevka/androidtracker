@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/roman/kidstracker/internal/domain"
 )
@@ -420,5 +421,96 @@ func (p *Postgres) SaveMQTTSettings(ctx context.Context, settings domain.MQTTSet
 			client_id = EXCLUDED.client_id, updated_at = now()`,
 		settings.Enabled, settings.Host, settings.Port, settings.Username, passwordCiphertext,
 		settings.TLS, settings.DiscoveryEnabled, settings.DiscoveryPrefix, settings.BaseTopic, settings.ClientID)
+	return err
+}
+
+func (p *Postgres) CreateUser(ctx context.Context, id, username, displayName, passwordHash, role string) (domain.User, error) {
+	var user domain.User
+	err := p.pool.QueryRow(ctx, `INSERT INTO users (id, username, display_name, password_hash, role)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, username, display_name, role, created_at, last_login_at`,
+		id, username, displayName, passwordHash, role).
+		Scan(&user.ID, &user.Username, &user.DisplayName, &user.Role, &user.CreatedAt, &user.LastLoginAt)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return domain.User{}, ErrDuplicate
+	}
+	return user, err
+}
+
+func (p *Postgres) UserByUsername(ctx context.Context, username string) (domain.User, error) {
+	var user domain.User
+	err := p.pool.QueryRow(ctx, `SELECT id, username, display_name, password_hash, role, created_at, last_login_at
+		FROM users WHERE username = $1`, username).
+		Scan(&user.ID, &user.Username, &user.DisplayName, &user.PasswordHash, &user.Role, &user.CreatedAt, &user.LastLoginAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.User{}, ErrNotFound
+	}
+	return user, err
+}
+
+func (p *Postgres) ListUsers(ctx context.Context) ([]domain.User, error) {
+	rows, err := p.pool.Query(ctx, `SELECT id, username, display_name, role, created_at, last_login_at
+		FROM users ORDER BY username`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := make([]domain.User, 0)
+	for rows.Next() {
+		var user domain.User
+		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Role, &user.CreatedAt, &user.LastLoginAt); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+func (p *Postgres) MarkUserLogin(ctx context.Context, userID string) error {
+	result, err := p.pool.Exec(ctx, `UPDATE users SET last_login_at = now(), updated_at = now() WHERE id = $1`, userID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *Postgres) CreateSession(ctx context.Context, tokenHash []byte, userID *string, role, label string, expiresAt time.Time) error {
+	if _, err := p.pool.Exec(ctx, `DELETE FROM sessions WHERE expires_at < now()`); err != nil {
+		return err
+	}
+	_, err := p.pool.Exec(ctx, `INSERT INTO sessions (token_hash, user_id, role, label, expires_at)
+		VALUES ($1, $2, $3, $4, $5)`, tokenHash, userID, role, label, expiresAt)
+	return err
+}
+
+func (p *Postgres) SessionByToken(ctx context.Context, tokenHash []byte) (domain.Session, error) {
+	var session domain.Session
+	var username, displayName *string
+	err := p.pool.QueryRow(ctx, `SELECT s.user_id, s.role, s.label, s.expires_at, u.username, u.display_name
+		FROM sessions s LEFT JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = $1 AND s.expires_at > now()`, tokenHash).
+		Scan(&session.UserID, &session.Role, &session.Label, &session.ExpiresAt, &username, &displayName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Session{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if session.UserID != nil {
+		if username == nil || displayName == nil {
+			return domain.Session{}, ErrNotFound
+		}
+		session.Username = *username
+		session.DisplayName = *displayName
+	}
+	return session, nil
+}
+
+func (p *Postgres) DeleteSession(ctx context.Context, tokenHash []byte) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM sessions WHERE token_hash = $1`, tokenHash)
 	return err
 }

@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/roman/kidstracker/internal/buildinfo"
 	"github.com/roman/kidstracker/internal/domain"
 	"github.com/roman/kidstracker/internal/secrets"
 	"github.com/roman/kidstracker/internal/store"
@@ -56,20 +56,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.Serve
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
+	s.mux.HandleFunc("GET /api/version", s.version)
+	s.mux.HandleFunc("POST /api/auth/login", s.login)
+	s.mux.HandleFunc("POST /api/auth/logout", s.userAuth(s.logout))
+	s.mux.HandleFunc("GET /api/auth/me", s.userAuth(s.currentUser))
 	s.mux.HandleFunc("POST /v1/enroll", s.enroll)
 	s.mux.HandleFunc("GET /v1/config", s.deviceAuth(s.getConfig))
 	s.mux.HandleFunc("POST /v1/config/ack", s.deviceAuth(s.acknowledgeConfig))
 	s.mux.HandleFunc("POST /v1/locations/batch", s.deviceAuth(s.recordLocations))
-	s.mux.HandleFunc("GET /api/admin/devices", s.adminAuth(s.listDevices))
+	s.mux.HandleFunc("GET /api/admin/devices", s.userAuth(s.listDevices))
 	s.mux.HandleFunc("POST /api/admin/devices", s.adminAuth(s.createDevice))
 	s.mux.HandleFunc("DELETE /api/admin/devices/{id}", s.adminAuth(s.deleteDevice))
 	s.mux.HandleFunc("POST /api/admin/enrollment-qr", s.adminAuth(s.createEnrollmentQR))
 	s.mux.HandleFunc("POST /api/admin/devices/{id}/revoke", s.adminAuth(s.revokeDevice))
 	s.mux.HandleFunc("PATCH /api/admin/devices/{id}/config", s.adminAuth(s.updateConfig))
-	s.mux.HandleFunc("GET /api/admin/devices/{id}/locations", s.adminAuth(s.locationHistory))
-	s.mux.HandleFunc("GET /api/admin/devices/{id}/telemetry", s.adminAuth(s.telemetryHistory))
+	s.mux.HandleFunc("GET /api/admin/devices/{id}/locations", s.userAuth(s.locationHistory))
+	s.mux.HandleFunc("GET /api/admin/devices/{id}/telemetry", s.userAuth(s.telemetryHistory))
 	s.mux.HandleFunc("GET /api/admin/mqtt", s.adminAuth(s.getMQTTSettings))
 	s.mux.HandleFunc("PUT /api/admin/mqtt", s.adminAuth(s.updateMQTTSettings))
+	s.mux.HandleFunc("GET /api/admin/users", s.adminAuth(s.listUsers))
+	s.mux.HandleFunc("POST /api/admin/users", s.adminAuth(s.createUser))
 	s.mux.Handle("GET /", http.FileServer(http.Dir("web")))
 }
 
@@ -108,23 +114,16 @@ func deviceFromContext(r *http.Request) domain.Device {
 	return device
 }
 
-func (s *Server) adminAuth(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		provided := bearerToken(r)
-		if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(s.adminToken)) != 1 {
-			writeError(w, http.StatusUnauthorized, "admin authentication required")
-			return
-		}
-		next(w, r)
-	}
-}
-
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	if err := s.repo.Ping(r.Context()); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) version(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, buildinfo.Current())
 }
 
 func (s *Server) createDevice(w http.ResponseWriter, r *http.Request) {

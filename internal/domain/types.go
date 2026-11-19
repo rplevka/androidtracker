@@ -2,6 +2,41 @@ package domain
 
 import "time"
 
+const (
+	RoleAdmin = "admin"
+	RoleUser  = "user"
+
+	AuthTypeAdminKey = "admin_key"
+	AuthTypePassword = "password"
+)
+
+type User struct {
+	ID           string     `json:"id"`
+	Username     string     `json:"username"`
+	DisplayName  string     `json:"display_name"`
+	PasswordHash string     `json:"-"`
+	Role         string     `json:"role"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+}
+
+type Session struct {
+	UserID      *string
+	Role        string
+	Label       string
+	Username    string
+	DisplayName string
+	ExpiresAt   time.Time
+}
+
+type Principal struct {
+	Username    string
+	DisplayName string
+	Role        string
+	AuthType    string
+	ExpiresAt   *time.Time
+}
+
 type Config struct {
 	Enabled                 bool    `json:"enabled"`
 	LocationIntervalSeconds int     `json:"location_interval_seconds"`
