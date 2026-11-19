@@ -3,82 +3,516 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Kidstracker admin</title>
+  <title>Kidstracker</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
   <style>
-    :root { color-scheme: light dark; font: 15px system-ui,sans-serif; }
-    body { margin: 0 auto; max-width: 1200px; padding: 1rem; }
-    header, .toolbar, .device { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
-    header { justify-content: space-between; }
-    input, button { padding: .55rem; font: inherit; }
-    input[type=number] { width: 8rem; }
-    #map { height: 55vh; min-height: 320px; border-radius: 8px; margin: 1rem 0; }
-    #history-controls { border: 1px solid #8886; border-radius: 8px; padding: .8rem; }
+    :root {
+      color-scheme: light dark;
+      --bg: #f3f7fa;
+      --panel: #ffffff;
+      --panel-soft: #f7fafc;
+      --text: #132432;
+      --muted: #647585;
+      --border: #d9e3eb;
+      --accent: #0d7b74;
+      --accent-strong: #09635e;
+      --accent-soft: #e2f4f1;
+      --danger: #b43838;
+      --danger-soft: #fbeaea;
+      --shadow: 0 18px 45px rgba(20, 40, 60, .08);
+      --sidebar: #091725;
+      --sidebar-text: #dbe7ef;
+      --sidebar-muted: #8da3b6;
+      --sidebar-active: rgba(86, 226, 192, .14);
+      --sidebar-active-text: #b7f8e7;
+      --input-bg: #ffffff;
+      --radius: 14px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #08121d;
+        --panel: #0e1c29;
+        --panel-soft: #0b1723;
+        --text: #e5eef5;
+        --muted: #91a4b4;
+        --border: #233546;
+        --accent: #56e2c0;
+        --accent-strong: #8af1d8;
+        --accent-soft: #123a37;
+        --danger: #ff8b8b;
+        --danger-soft: #351c22;
+        --shadow: 0 20px 55px rgba(0, 0, 0, .28);
+        --input-bg: #0a1622;
+      }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body { min-height: 100%; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button, input, select { font: inherit; }
+    button { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 9px; padding: .55rem .8rem; cursor: pointer; transition: border-color .15s, background .15s, color .15s, transform .15s; }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:active:not(:disabled) { transform: translateY(1px); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    input, select { border: 1px solid var(--border); background: var(--input-bg); color: var(--text); border-radius: 9px; padding: .55rem .65rem; min-width: 0; }
+    input:focus, select:focus, button:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
+    label { display: grid; gap: .3rem; font-size: .82rem; color: var(--muted); }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: clamp(1.35rem, 2.5vw, 1.8rem); margin-bottom: .15rem; letter-spacing: -.02em; }
+    h2 { font-size: 1.15rem; margin-bottom: .35rem; }
+    .muted { color: var(--muted); }
+    .danger { color: var(--danger); }
+    .icon { width: 1.2rem; height: 1.2rem; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #06221f; font-weight: 700; }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+    .btn-danger { color: var(--danger); background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 32%, var(--border)); }
+    .btn-ghost { background: transparent; border-color: transparent; color: var(--muted); }
+    .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 2.35rem; height: 2.35rem; padding: 0; border-color: transparent; background: transparent; color: inherit; }
+    .icon-button:hover:not(:disabled) { background: color-mix(in srgb, currentColor 9%, transparent); border-color: transparent; }
+
+    /* Login */
+    #login-screen {
+      position: relative;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      padding: clamp(1.2rem, 6vw, 5.5rem);
+      padding-bottom: 5rem;
+      overflow-x: hidden;
+      background:
+        linear-gradient(105deg, rgba(3, 10, 19, .94) 0%, rgba(3, 10, 19, .82) 34%, rgba(3, 10, 19, .36) 66%, rgba(3, 10, 19, .72) 100%),
+        url("login-wallpaper.svg") center / cover no-repeat;
+      color: #eaf5fb;
+    }
+    #login-screen::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(circle at 78% 42%, rgba(86, 226, 192, .12), transparent 42%);
+    }
+    .login-card {
+      position: relative;
+      z-index: 2;
+      width: min(100%, 27rem);
+      padding: clamp(1.35rem, 3.5vw, 2.25rem);
+      border: 1px solid rgba(214, 239, 250, .18);
+      border-radius: 24px;
+      background: rgba(6, 18, 31, .82);
+      box-shadow: 0 35px 90px rgba(0, 0, 0, .42);
+      backdrop-filter: blur(18px);
+    }
+    .login-brand { display: flex; align-items: center; gap: .75rem; margin-bottom: 1.5rem; }
+    .brand-mark {
+      display: inline-grid;
+      place-items: center;
+      width: 2.5rem;
+      height: 2.5rem;
+      border-radius: 12px;
+      background: linear-gradient(145deg, #56e2c0, #1f8f8c);
+      color: #03231f;
+      font-weight: 900;
+      font-size: 1.2rem;
+      box-shadow: 0 8px 22px rgba(86, 226, 192, .24);
+    }
+    .login-brand strong { display: block; font-size: 1.05rem; letter-spacing: .01em; }
+    .login-brand small { display: block; color: #91aabc; font-size: .76rem; letter-spacing: .08em; text-transform: uppercase; }
+    .login-card h1 { margin: 0 0 .4rem; font-size: 1.75rem; color: #f4fbff; }
+    .login-card > p { color: #9db2c3; }
+    .login-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: .3rem; padding: .28rem; margin: 1.2rem 0 1.1rem; border-radius: 12px; background: rgba(255, 255, 255, .06); }
+    .login-tab { border: 0; border-radius: 9px; padding: .55rem .5rem; background: transparent; color: #9db2c3; font-size: .86rem; }
+    .login-tab:hover:not(:disabled) { border-color: transparent; background: rgba(255, 255, 255, .05); }
+    .login-tab.active { background: rgba(86, 226, 192, .15); color: #d7fff4; font-weight: 700; }
+    #login-form { display: grid; gap: .9rem; }
+    #login-screen label { color: #9db2c3; }
+    #login-screen input { background: rgba(255, 255, 255, .07); border-color: rgba(214, 239, 250, .16); color: #f1fbff; padding: .7rem .8rem; }
+    #login-screen input::placeholder { color: #6e8799; }
+    #login-form .btn-primary { width: 100%; padding: .75rem; color: #03231f; }
+    #login-error { min-height: 1.3rem; margin: .15rem 0 0; color: #ff9c9c; font-size: .85rem; }
+    .login-hint { margin: 1rem 0 0; color: #7e95a7; font-size: .78rem; }
+    .login-footer {
+      position: absolute;
+      z-index: 2;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: .9rem clamp(1rem, 4vw, 2rem);
+      color: #7f97a9;
+      font-size: .78rem;
+    }
+    .build-stamp { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #9db2c3; white-space: nowrap; }
+
+    /* App shell */
+    #app-shell { display: grid; grid-template-columns: 17rem minmax(0, 1fr); min-height: 100vh; }
+    #app-shell.sidebar-collapsed { grid-template-columns: 4.9rem minmax(0, 1fr); }
+    #sidebar {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      display: flex;
+      flex-direction: column;
+      gap: .9rem;
+      height: 100vh;
+      padding: .8rem;
+      overflow: auto;
+      background: var(--sidebar);
+      color: var(--sidebar-text);
+      border-right: 1px solid rgba(255, 255, 255, .06);
+    }
+    .sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-height: 2.9rem; }
+    .sidebar-brand { display: flex; align-items: center; gap: .65rem; min-width: 0; color: inherit; text-decoration: none; }
+    .brand-copy { min-width: 0; }
+    .brand-copy strong { display: block; font-size: .98rem; white-space: nowrap; }
+    .brand-copy small { display: block; color: var(--sidebar-muted); font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+    #sidebar-collapse { color: var(--sidebar-muted); }
+    #sidebar-collapse .icon { transition: transform .2s; }
+    .sidebar-collapsed #sidebar-collapse .icon { transform: rotate(180deg); }
+    .sidebar-nav { display: flex; flex-direction: column; gap: .25rem; }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: .7rem;
+      width: 100%;
+      padding: .7rem .75rem;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--sidebar-muted);
+      text-align: left;
+      font-size: .9rem;
+    }
+    .nav-item:hover:not(:disabled) { background: rgba(255, 255, 255, .055); border-color: transparent; color: var(--sidebar-text); }
+    .nav-item.active { background: var(--sidebar-active); color: var(--sidebar-active-text); font-weight: 700; }
+    .nav-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sidebar-footer { display: flex; flex-direction: column; gap: .25rem; margin-top: auto; padding-top: .7rem; border-top: 1px solid rgba(255, 255, 255, .08); }
+    .sidebar-user { display: flex; align-items: center; gap: .65rem; padding: .55rem .55rem .7rem; min-width: 0; }
+    .avatar { display: inline-grid; place-items: center; width: 2.15rem; height: 2.15rem; flex: 0 0 auto; border-radius: 50%; background: linear-gradient(145deg, #56e2c0, #1f8f8c); color: #03231f; font-weight: 800; }
+    .sidebar-user-copy { min-width: 0; }
+    .sidebar-user-copy strong, .sidebar-user-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sidebar-user-copy strong { font-size: .86rem; }
+    .sidebar-user-copy small { color: var(--sidebar-muted); font-size: .72rem; text-transform: capitalize; }
+    .sidebar-collapsed .brand-copy,
+    .sidebar-collapsed .sidebar-user-copy,
+    .sidebar-collapsed .nav-label,
+    .sidebar-collapsed .build-stamp { display: none; }
+    .sidebar-collapsed .sidebar-head { justify-content: center; }
+    .sidebar-collapsed .sidebar-brand { display: none; }
+    .sidebar-collapsed .nav-item { justify-content: center; padding-inline: .5rem; }
+    .sidebar-collapsed .sidebar-user { justify-content: center; padding-inline: 0; }
+    .sidebar-collapsed .build-stamp { display: none; }
+    #app-build { padding: .45rem .55rem .2rem; font-size: .7rem; }
+    #sidebar-scrim { display: none; }
+    #mobile-menu { display: none; }
+    #app-main { min-width: 0; }
+    #topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: .85rem;
+      padding: 1rem clamp(1rem, 3vw, 2.5rem);
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(14px);
+    }
+    .topbar-heading { min-width: 0; }
+    .topbar-heading .eyebrow { margin: 0 0 .1rem; color: var(--muted); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; }
+    .topbar-heading h1 { margin: 0; }
+    #user-chip { margin-left: auto; display: inline-flex; align-items: center; gap: .55rem; max-width: 18rem; }
+    #user-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .role-badge { display: inline-flex; align-items: center; padding: .18rem .45rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: .68rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+    #content { width: 100%; max-width: 1500px; padding: 1.5rem clamp(1rem, 3vw, 2.5rem) 3rem; }
+    .page { display: block; }
+    .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .page-heading h2 { margin: 0 0 .15rem; }
+    .page-heading p { margin: 0; }
+    .card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); padding: 1rem; }
+    .toolbar { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
+    #message { min-height: 1.4em; margin: .25rem 0 .75rem; }
+    #history-controls { margin: 0 0 1rem; }
     .history-fields { display: flex; align-items: end; gap: .75rem; flex-wrap: wrap; }
-    .history-fields label { display: grid; gap: .25rem; }
     #history-days { width: min(24rem, 80vw); }
-    #mqtt-panel { margin: 1rem 0; border: 1px solid #8886; border-radius: 8px; padding: .8rem; }
-    #mqtt-form { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); align-items: end; }
-    #mqtt-form label { display: grid; gap: .25rem; }
-    #mqtt-status { grid-column: 1 / -1; white-space: pre-wrap; }
-    #mqtt-status.connected { color: #26743a; }
-    #mqtt-status.error { color: #bf3737; }
-    #devices { display: grid; gap: .7rem; }
-    .device { border: 1px solid #8886; border-radius: 8px; padding: .8rem; }
-    .device-name { font-weight: 650; min-width: 9rem; }
-    .config-state { display: block; border-radius: 4px; padding: .25rem .4rem; }
+    #map { height: 55vh; min-height: 320px; border-radius: var(--radius); margin: 0 0 1rem; border: 1px solid var(--border); background: #b9d7ea; }
+    #devices { display: grid; gap: .85rem; }
+    .device { display: flex; flex-direction: column; gap: .7rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); padding: 1rem; }
+    .device-main { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
+    .device-name { font-weight: 750; font-size: 1.02rem; }
+    .device-status { color: var(--muted); font-size: .88rem; }
+    .config-state { display: inline-block; border-radius: 6px; padding: .22rem .4rem; font-size: .76rem; }
     .config-pending, .config-unsaved { color: #8a4b00; background: #e8b54a33; }
     .config-applied { color: #26743a; background: #4aaf5933; }
-    .muted { opacity: .7; }
-    #message { min-height: 1.4em; }
-    .danger { color: #bf3737; }
-    dialog { max-width: min(92vw, 28rem); border: 1px solid #8886; border-radius: 10px; }
-    dialog::backdrop { background: #0009; }
+    .device-controls { display: flex; align-items: end; gap: .55rem; flex-wrap: wrap; }
+    .device-controls label { font-size: .72rem; }
+    .device-controls input[type=number] { width: 7.5rem; }
+    .device-actions { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+    .device-actions .muted { font-size: .78rem; }
+    #mqtt-panel { margin: 0; }
+    #mqtt-panel > summary { cursor: pointer; font-weight: 700; }
+    #mqtt-form { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); align-items: end; margin-top: .85rem; }
+    #mqtt-status { grid-column: 1 / -1; white-space: pre-wrap; margin: .2rem 0 0; }
+    #mqtt-status.connected { color: #26743a; }
+    #mqtt-status.error { color: var(--danger); }
+    .admin-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); align-items: start; }
+    .form-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); align-items: end; }
+    .form-grid .full { grid-column: 1 / -1; }
+    .form-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+    #user-message { min-height: 1.3em; margin: .7rem 0; }
+    #users-list { display: grid; gap: .5rem; }
+    .user-row { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; padding: .65rem .7rem; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-soft); }
+    .user-row-main { display: grid; min-width: 10rem; }
+    .user-row-main strong { font-size: .9rem; }
+    .user-row-main small, .user-row-meta { color: var(--muted); font-size: .76rem; }
+    .profile-card { max-width: 38rem; }
+    .profile-list { display: grid; gap: .75rem; margin: 1.1rem 0 1.4rem; }
+    .profile-list div { display: grid; gap: .15rem; padding-bottom: .65rem; border-bottom: 1px solid var(--border); }
+    .profile-list dt { color: var(--muted); font-size: .75rem; letter-spacing: .06em; text-transform: uppercase; }
+    .profile-list dd { margin: 0; font-weight: 650; }
+    dialog { max-width: min(92vw, 28rem); border: 1px solid var(--border); border-radius: 14px; background: var(--panel); color: var(--text); padding: 1.2rem; box-shadow: var(--shadow); }
+    dialog::backdrop { background: #0009; backdrop-filter: blur(2px); }
     #enrollment-qr { display: block; width: min(80vw, 360px); height: auto; margin: 1rem auto; image-rendering: pixelated; }
     #enrollment-code { display: block; overflow-wrap: anywhere; margin: .7rem 0; }
     #telemetry-dialog { max-width: min(96vw, 76rem); }
     #telemetry-table { border-collapse: collapse; width: 100%; font-size: .86rem; }
-    #telemetry-table th, #telemetry-table td { border-bottom: 1px solid #8884; padding: .3rem .4rem; text-align: left; white-space: nowrap; }
+    #telemetry-table th, #telemetry-table td { border-bottom: 1px solid var(--border); padding: .3rem .4rem; text-align: left; white-space: nowrap; }
     #telemetry-summary { white-space: pre-wrap; }
-    @media (max-width: 600px) { .device { align-items: flex-start; flex-direction: column; } }
+    @media (max-width: 900px) {
+      #app-shell, #app-shell.sidebar-collapsed { display: block; }
+      #sidebar {
+        position: fixed;
+        inset: 0 auto 0 0;
+        width: min(82vw, 18rem);
+        height: 100vh;
+        transform: translateX(-105%);
+        transition: transform .2s ease;
+        box-shadow: 25px 0 70px rgba(0, 0, 0, .35);
+      }
+      #app-shell.sidebar-open #sidebar { transform: translateX(0); }
+      #sidebar-scrim { display: block; position: fixed; inset: 0; z-index: 25; background: rgba(0, 0, 0, .45); opacity: 0; pointer-events: none; transition: opacity .2s; }
+      #app-shell.sidebar-open #sidebar-scrim { opacity: 1; pointer-events: auto; }
+      #sidebar-collapse { display: none; }
+      #mobile-menu { display: inline-flex; }
+      .sidebar-collapsed .brand-copy,
+      .sidebar-collapsed .sidebar-user-copy,
+      .sidebar-collapsed .nav-label,
+      .sidebar-collapsed .build-stamp { display: block; }
+      .sidebar-collapsed .sidebar-head { justify-content: space-between; }
+      .sidebar-collapsed .sidebar-brand { display: flex; }
+      .sidebar-collapsed .nav-item { justify-content: flex-start; padding-inline: .75rem; }
+      .sidebar-collapsed .sidebar-user { justify-content: flex-start; padding-inline: .55rem; }
+      #sidebar-name, #sidebar-role { display: block; }
+      #app-build { display: block; }
+      #topbar { padding: .8rem 1rem; }
+      #content { padding: 1rem 1rem 2.5rem; }
+      #user-chip { max-width: 10rem; }
+      #user-chip-name { display: none; }
+      #map { height: 45vh; min-height: 260px; }
+      .device { padding: .85rem; }
+    }
+    @media (max-width: 560px) {
+      .login-footer { font-size: .7rem; }
+      .login-footer span:first-child { display: none; }
+      .device-controls input[type=number] { width: 100%; }
+      .device-controls label { flex: 1 1 8rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
   </style>
 </head>
 <body>
-  <header><h1>Kidstracker</h1><div><input id="admin-token" type="password" autocomplete="off" placeholder="Admin token"><button id="connect">Connect</button></div></header>
-  <p id="message" class="muted">Enter the admin token to load devices. The token is kept in this tab only.</p>
-  <section class="toolbar"><input id="new-name" maxlength="120" placeholder="New device name"><button id="create">Create device</button></section>
-  <details id="mqtt-panel">
-    <summary><strong>MQTT / Home Assistant</strong></summary>
-    <form id="mqtt-form">
-      <label><span><input id="mqtt-enabled" type="checkbox"> Enabled</span></label>
-      <label>Broker host <input id="mqtt-host" required placeholder="homeassistant.local"></label>
-      <label>Port <input id="mqtt-port" type="number" min="1" max="65535" required></label>
-      <label>Username <input id="mqtt-username" autocomplete="username"></label>
-      <label>Password <input id="mqtt-password" type="password" autocomplete="new-password" placeholder="leave blank to keep stored"></label>
-      <label><span><input id="mqtt-clear-password" type="checkbox"> Clear stored password</span></label>
-      <label><span><input id="mqtt-tls" type="checkbox"> TLS</span></label>
-      <label><span><input id="mqtt-discovery-enabled" type="checkbox"> Publish Home Assistant discovery</span></label>
-      <label>Discovery prefix <input id="mqtt-discovery-prefix" placeholder="homeassistant"></label>
-      <label>Base topic <input id="mqtt-base-topic" placeholder="kidstracker"></label>
-      <label>Client ID <input id="mqtt-client-id" placeholder="auto-generated if blank"></label>
-      <button type="submit">Save MQTT settings</button>
-      <button type="button" id="mqtt-refresh">Refresh status</button>
-      <p id="mqtt-status" aria-live="polite">Enter the admin token to load MQTT settings.</p>
-    </form>
-  </details>
-  <section id="history-controls" hidden>
-    <h2 id="history-title">Trip history</h2>
-    <label for="history-days">Look back: <span id="history-days-label">1</span> day(s)</label><br>
-    <input id="history-days" type="range" min="1" max="14" value="1">
-    <div class="history-fields">
-      <label>From <input id="history-from" type="datetime-local"></label>
-      <label>To <input id="history-to" type="datetime-local"></label>
-      <button id="load-history">Load route</button>
-      <button id="close-history">Close</button>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-admin" viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M10 17h4"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="12" cy="17" r="2"/></symbol>
+    <symbol id="i-profile" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-4 3.2-6 7-6s6.2 2 7 6"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M14 8l4 4-4 4M18 12H9"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M14 6l-6 6 6 6"/></symbol>
+  </svg>
+
+  <section id="login-screen" aria-labelledby="login-title">
+    <div class="login-card">
+      <div class="login-brand">
+        <span class="brand-mark">K</span>
+        <span>
+          <strong>Kidstracker</strong>
+          <small>Control room</small>
+        </span>
+      </div>
+      <h1 id="login-title">Welcome back</h1>
+      <p>Sign in to follow your trackers and inspect their status.</p>
+      <div class="login-tabs" role="tablist" aria-label="Sign-in method">
+        <button class="login-tab active" type="button" data-login-mode="admin" role="tab" aria-selected="true">Admin key</button>
+        <button class="login-tab" type="button" data-login-mode="user" role="tab" aria-selected="false">Username &amp; password</button>
+      </div>
+      <form id="login-form" novalidate>
+        <div id="login-admin-fields">
+          <label>Admin key
+            <input id="login-admin-key" type="password" autocomplete="off" placeholder="ADMIN_TOKEN value" spellcheck="false">
+          </label>
+        </div>
+        <div id="login-user-fields" hidden>
+          <label>Username
+            <input id="login-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
+          </label>
+          <label>Password
+            <input id="login-password" type="password" autocomplete="current-password">
+          </label>
+        </div>
+        <button class="btn-primary" type="submit">Sign in</button>
+        <p id="login-error" role="alert"></p>
+      </form>
+      <p class="login-hint">The admin key is the <code>ADMIN_TOKEN</code> configured for this server. Accounts are managed from the Administrate page.</p>
+    </div>
+    <div class="login-footer">
+      <span>Self-hosted GPS tracking</span>
+      <span class="build-stamp" id="login-build">dev</span>
     </div>
   </section>
-  <div id="map" aria-label="Device location map"></div>
-  <section id="devices"></section>
+
+  <div id="app-shell" hidden>
+    <div id="sidebar-scrim"></div>
+    <aside id="sidebar" aria-label="Main navigation">
+      <div class="sidebar-head">
+        <a class="sidebar-brand" href="#dashboard" aria-label="Kidstracker dashboard">
+          <span class="brand-mark">K</span>
+          <span class="brand-copy"><strong>Kidstracker</strong><small>Control room</small></span>
+        </a>
+        <button id="sidebar-collapse" class="icon-button" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">
+          <svg class="icon"><use href="#i-chevron"></use></svg>
+        </button>
+      </div>
+      <nav class="sidebar-nav" aria-label="Sections">
+        <button class="nav-item active" type="button" data-section="dashboard">
+          <svg class="icon"><use href="#i-dashboard"></use></svg><span class="nav-label">Dashboard</span>
+        </button>
+        <button class="nav-item admin-only" type="button" data-section="administrate">
+          <svg class="icon"><use href="#i-admin"></use></svg><span class="nav-label">Administrate</span>
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="sidebar-user">
+          <span class="avatar" id="sidebar-avatar">?</span>
+          <span class="sidebar-user-copy"><strong id="sidebar-name"></strong><small id="sidebar-role"></small></span>
+        </div>
+        <button class="nav-item" type="button" data-section="profile">
+          <svg class="icon"><use href="#i-profile"></use></svg><span class="nav-label">Profile</span>
+        </button>
+        <button class="nav-item" type="button" id="logout-button">
+          <svg class="icon"><use href="#i-logout"></use></svg><span class="nav-label">Log out</span>
+        </button>
+        <div class="build-stamp muted" id="app-build">dev</div>
+      </div>
+    </aside>
+
+    <div id="app-main">
+      <header id="topbar">
+        <button id="mobile-menu" class="icon-button" type="button" aria-label="Open navigation" title="Open navigation">
+          <svg class="icon"><use href="#i-menu"></use></svg>
+        </button>
+        <div class="topbar-heading">
+          <p class="eyebrow" id="page-eyebrow">Overview</p>
+          <h1 id="page-title">Dashboard</h1>
+        </div>
+        <button id="user-chip" type="button" title="Open profile">
+          <span id="user-chip-name"></span><span class="role-badge" id="user-chip-role"></span>
+        </button>
+      </header>
+
+      <main id="content">
+        <section id="section-dashboard" class="page">
+          <div class="page-heading">
+            <div><h2>Devices</h2><p class="muted">Live positions, battery state and tracker settings.</p></div>
+            <div class="toolbar admin-only" id="create-device-controls">
+              <input id="new-name" maxlength="120" placeholder="New device name" aria-label="New device name">
+              <button id="create" class="btn-primary" type="button">Create device</button>
+            </div>
+          </div>
+          <p id="message" class="muted" role="status" aria-live="polite"></p>
+          <section id="history-controls" class="card" hidden>
+            <h2 id="history-title">Trip history</h2>
+            <label for="history-days">Look back: <span id="history-days-label">1</span> day(s)</label>
+            <input id="history-days" type="range" min="1" max="14" value="1">
+            <div class="history-fields">
+              <label>From <input id="history-from" type="datetime-local"></label>
+              <label>To <input id="history-to" type="datetime-local"></label>
+              <button id="load-history" type="button">Load route</button>
+              <button id="close-history" type="button">Close</button>
+            </div>
+          </section>
+          <div id="map" aria-label="Device location map"></div>
+          <section id="devices" aria-label="Devices"></section>
+        </section>
+
+        <section id="section-administrate" class="page" hidden>
+          <div class="page-heading">
+            <div><h2>System settings</h2><p class="muted">Broker integration and the people who can sign in.</p></div>
+          </div>
+          <div class="admin-grid">
+            <details id="mqtt-panel" class="card">
+              <summary>MQTT / Home Assistant</summary>
+              <form id="mqtt-form">
+                <label><span><input id="mqtt-enabled" type="checkbox"> Enabled</span></label>
+                <label>Broker host <input id="mqtt-host" required placeholder="homeassistant.local"></label>
+                <label>Port <input id="mqtt-port" type="number" min="1" max="65535" required></label>
+                <label>Username <input id="mqtt-username" autocomplete="username"></label>
+                <label>Password <input id="mqtt-password" type="password" autocomplete="new-password" placeholder="leave blank to keep stored"></label>
+                <label><span><input id="mqtt-clear-password" type="checkbox"> Clear stored password</span></label>
+                <label><span><input id="mqtt-tls" type="checkbox"> TLS</span></label>
+                <label><span><input id="mqtt-discovery-enabled" type="checkbox"> Publish Home Assistant discovery</span></label>
+                <label>Discovery prefix <input id="mqtt-discovery-prefix" placeholder="homeassistant"></label>
+                <label>Base topic <input id="mqtt-base-topic" placeholder="kidstracker"></label>
+                <label>Client ID <input id="mqtt-client-id" placeholder="auto-generated if blank"></label>
+                <div class="form-actions full">
+                  <button class="btn-primary" type="submit">Save MQTT settings</button>
+                  <button type="button" id="mqtt-refresh">Refresh status</button>
+                </div>
+                <p id="mqtt-status" aria-live="polite">Enter the admin key to load MQTT settings.</p>
+              </form>
+            </details>
+
+            <section class="card" aria-labelledby="users-title">
+              <h2 id="users-title">User accounts</h2>
+              <p class="muted">Create accounts for people who should see the dashboard. Administrators can also manage devices and server settings.</p>
+              <form id="create-user-form" class="form-grid">
+                <label>Username <input id="new-username" required minlength="3" maxlength="64" pattern="[A-Za-z0-9._-]{3,64}" autocapitalize="none" spellcheck="false" placeholder="e.g. patrik"></label>
+                <label>Display name <input id="new-display-name" maxlength="120" placeholder="e.g. Patrik"></label>
+                <label>Password <input id="new-password" type="password" required minlength="10" maxlength="256" autocomplete="new-password"></label>
+                <label>Role
+                  <select id="new-role">
+                    <option value="user">User</option>
+                    <option value="admin">Administrator</option>
+                  </select>
+                </label>
+                <div class="form-actions full"><button class="btn-primary" type="submit">Create account</button></div>
+              </form>
+              <p id="user-message" class="muted" role="status" aria-live="polite"></p>
+              <div id="users-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="section-profile" class="page" hidden>
+          <div class="page-heading"><div><h2>Account details</h2><p class="muted">Your current session and profile.</p></div></div>
+          <div class="card profile-card">
+            <dl class="profile-list">
+              <div><dt>Username</dt><dd id="profile-username"></dd></div>
+              <div><dt>Display name</dt><dd id="profile-display-name"></dd></div>
+              <div><dt>Role</dt><dd id="profile-role"></dd></div>
+              <div><dt>Signed in with</dt><dd id="profile-auth-type"></dd></div>
+              <div><dt>Session expires</dt><dd id="profile-expires"></dd></div>
+            </dl>
+            <button id="profile-logout" class="btn-danger" type="button">Log out</button>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
   <dialog id="telemetry-dialog" aria-labelledby="telemetry-title">
     <h2 id="telemetry-title">Device telemetry</h2>
     <p id="telemetry-summary" class="muted"></p>
@@ -88,40 +522,206 @@
         <tbody></tbody>
       </table>
     </div>
-    <button id="close-telemetry-dialog">Close</button>
+    <button id="close-telemetry-dialog" type="button">Close</button>
   </dialog>
+
   <dialog id="enrollment-dialog" aria-labelledby="enrollment-title">
     <h2 id="enrollment-title">Scan to enroll device</h2>
     <p id="enrollment-note" class="muted"></p>
     <img id="enrollment-qr" alt="Enrollment QR code">
     <code id="enrollment-code"></code>
     <p>This code is single-use and expires after 24 hours.</p>
-    <button id="copy-enrollment-code">Copy code</button>
-    <button id="close-enrollment-dialog">Close</button>
+    <button id="copy-enrollment-code" type="button">Copy code</button>
+    <button id="close-enrollment-dialog" type="button">Close</button>
   </dialog>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script>
-    const tokenInput = document.querySelector('#admin-token');
+    const loginScreen = document.querySelector('#login-screen');
+    const appShell = document.querySelector('#app-shell');
+    const loginForm = document.querySelector('#login-form');
+    const loginError = document.querySelector('#login-error');
+    const loginAdminFields = document.querySelector('#login-admin-fields');
+    const loginUserFields = document.querySelector('#login-user-fields');
+    const loginTabs = document.querySelectorAll('.login-tab');
     const message = document.querySelector('#message');
     const deviceList = document.querySelector('#devices');
     const enrollmentDialog = document.querySelector('#enrollment-dialog');
     const telemetryDialog = document.querySelector('#telemetry-dialog');
     const historyControls = document.querySelector('#history-controls');
+    const usersList = document.querySelector('#users-list');
+    const userMessage = document.querySelector('#user-message');
+    const createUserForm = document.querySelector('#create-user-form');
+    const adminTokenKey = 'admin-token';
+    const sessionTokenKey = 'auth-token';
+    let authToken = sessionStorage.getItem(sessionTokenKey) || sessionStorage.getItem(adminTokenKey) || '';
+    let currentUser = null;
+    let loginMode = 'admin';
+    let activeSection = 'dashboard';
     let qrObjectUrl = null;
-    tokenInput.value = sessionStorage.getItem('admin-token') || '';
-    const map = L.map('map').setView([20, 0], 2);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(map);
+    let map = null;
     let markers = [];
     let historyLine = null;
     let historyDevice = null;
 
-    async function api(path, options = {}) {
-      const response = await fetch(path, { ...options, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tokenInput.value}`, ...(options.headers || {}) } });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+    function isAdmin() {
+      return currentUser != null && currentUser.role === 'admin';
+    }
+
+    function setMessage(text, isError = false) {
+      message.textContent = text;
+      message.className = isError ? 'danger' : 'muted';
+    }
+
+    function setUserMessage(text, isError = false) {
+      userMessage.textContent = text;
+      userMessage.className = isError ? 'danger' : 'muted';
+    }
+
+    async function api(path, options = {}, { skipAuth = false } = {}) {
+      const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      if (!skipAuth && authToken) headers.Authorization = `Bearer ${authToken}`;
+      const response = await fetch(path, { ...options, headers });
+      const contentType = response.headers.get('content-type') || '';
+      const data = contentType.includes('application/json') ? await response.json() : null;
+      if (!response.ok) {
+        if (response.status === 401 && !skipAuth) {
+          clearSession();
+          showLogin();
+        }
+        throw new Error((data && data.error) || `Request failed (${response.status})`);
+      }
       return data;
     }
-    function setMessage(text, isError = false) { message.textContent = text; message.className = isError ? 'danger' : 'muted'; }
+
+    function clearSession() {
+      authToken = '';
+      currentUser = null;
+      sessionStorage.removeItem(sessionTokenKey);
+      sessionStorage.removeItem(adminTokenKey);
+    }
+
+    function setLoginMode(mode) {
+      loginMode = mode;
+      loginTabs.forEach(tab => {
+        const active = tab.dataset.loginMode === mode;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', String(active));
+      });
+      loginAdminFields.hidden = mode !== 'admin';
+      loginUserFields.hidden = mode !== 'user';
+      loginError.textContent = '';
+      const target = mode === 'admin' ? document.querySelector('#login-admin-key') : document.querySelector('#login-username');
+      if (target) target.focus();
+    }
+
+    function showLogin() {
+      appShell.hidden = true;
+      loginScreen.hidden = false;
+      loginError.textContent = '';
+      historyControls.hidden = true;
+      historyDevice = null;
+      setLoginMode(loginMode);
+    }
+
+    function showApp() {
+      loginScreen.hidden = true;
+      appShell.hidden = false;
+      applyRoleVisibility();
+      ensureMap();
+    }
+
+    function applyRoleVisibility() {
+      document.querySelectorAll('.admin-only').forEach(element => { element.hidden = !isAdmin(); });
+      if (!isAdmin() && activeSection === 'administrate') {
+        navigate('dashboard');
+      }
+      if (!currentUser) return;
+      const displayName = currentUser.display_name || currentUser.username || '';
+      document.querySelector('#sidebar-name').textContent = displayName;
+      document.querySelector('#sidebar-role').textContent = isAdmin() ? 'Administrator' : 'Viewer';
+      document.querySelector('#sidebar-avatar').textContent = displayName.slice(0, 1).toUpperCase() || '?';
+      document.querySelector('#user-chip-name').textContent = displayName;
+      document.querySelector('#user-chip-role').textContent = isAdmin() ? 'Admin' : 'User';
+    }
+
+    function renderProfile() {
+      if (!currentUser) return;
+      document.querySelector('#profile-username').textContent = currentUser.username;
+      document.querySelector('#profile-display-name').textContent = currentUser.display_name || currentUser.username;
+      document.querySelector('#profile-role').textContent = currentUser.role === 'admin' ? 'Administrator' : 'User';
+      document.querySelector('#profile-auth-type').textContent = currentUser.auth_type === 'admin_key' ? 'Admin key' : 'Username & password';
+      document.querySelector('#profile-expires').textContent = currentUser.expires_at
+        ? new Date(currentUser.expires_at).toLocaleString()
+        : 'No session expiry';
+    }
+
+    async function logout() {
+      try {
+        if (authToken) await api('/api/auth/logout', { method: 'POST' });
+      } catch (_) {
+        // The local session is cleared even when the server session already expired.
+      }
+      clearSession();
+      showLogin();
+    }
+
+    function ensureMap() {
+      if (!window.L) return;
+      if (!map) {
+        map = L.map('map').setView([20, 0], 2);
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+      }
+      requestAnimationFrame(() => map.invalidateSize());
+    }
+
+    function batteryAdjustedInterval(seconds, battery, charging) {
+      if (charging || battery == null || battery < 0 || battery > 100) return seconds;
+      if (battery <= 5) return Math.max(seconds, 3600);
+      if (battery <= 15) return Math.min(seconds * 4, 86400);
+      if (battery <= 30) return Math.min(seconds * 2, 86400);
+      return seconds;
+    }
+
+    function estimatedEta(baseTime, intervalSeconds) {
+      if (!baseTime) return 'unknown';
+      const at = new Date(baseTime).getTime() + intervalSeconds * 1000;
+      const remainingMinutes = Math.ceil((at - Date.now()) / 60000);
+      return remainingMinutes <= 0 ? 'due' : `${new Date(at).toLocaleTimeString()} (in ${remainingMinutes}m)`;
+    }
+
+    function localDateTimeValue(date) {
+      return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    }
+
+    function telemetryBool(value, on = 'on', off = 'off') {
+      return value == null ? '?' : value ? on : off;
+    }
+
+    function locationSourceLabel(source) {
+      return source === 'gps' ? 'GPS' : source === 'network' ? 'network (cell/Wi-Fi)' : source || 'unknown';
+    }
+
+    async function loadBuildInfo() {
+      try {
+        const info = await api('/api/version', {}, { skipAuth: true });
+        const label = [info.version, info.short_commit].filter(value => value && value !== 'unknown').join(' · ') || 'dev';
+        const title = `Version ${info.version || 'dev'}\nCommit ${info.commit || 'unknown'}${info.build_time ? `\nBuilt ${info.build_time}` : ''}`;
+        for (const selector of ['#login-build', '#app-build']) {
+          const element = document.querySelector(selector);
+          if (element) {
+            element.textContent = label;
+            element.title = title;
+          }
+        }
+      } catch (_) {
+        // Build information is optional; the login screen remains usable.
+      }
+    }
+
     function renderMQTTStatus(status) {
       const target = document.querySelector('#mqtt-status');
       if (!status || !status.connected) {
@@ -134,6 +734,7 @@
       target.className = 'connected';
       target.textContent = `Connected${status.last_connected_at ? ` since ${new Date(status.last_connected_at).toLocaleString()}` : ''}.`;
     }
+
     function fillMQTTSettings(data) {
       const settings = data.settings || {};
       document.querySelector('#mqtt-enabled').checked = !!settings.enabled;
@@ -149,27 +750,16 @@
       password.placeholder = settings.password_set ? 'stored password — leave blank to keep' : 'broker password';
       renderMQTTStatus(data.status);
     }
+
     async function loadMQTTSettings() {
-      if (!tokenInput.value) return;
+      if (!isAdmin()) return;
       try {
         fillMQTTSettings(await api('/api/admin/mqtt'));
       } catch (error) {
-        renderMQTTStatus({last_error: error.message});
+        renderMQTTStatus({ last_error: error.message });
       }
     }
-    function batteryAdjustedInterval(seconds, battery, charging) {
-      if (charging || battery == null || battery < 0 || battery > 100) return seconds;
-      if (battery <= 5) return Math.max(seconds, 3600);
-      if (battery <= 15) return Math.min(seconds * 4, 86400);
-      if (battery <= 30) return Math.min(seconds * 2, 86400);
-      return seconds;
-    }
-    function estimatedEta(baseTime, intervalSeconds) {
-      if (!baseTime) return 'unknown';
-      const at = new Date(baseTime).getTime() + intervalSeconds * 1000;
-      const remainingMinutes = Math.ceil((at - Date.now()) / 60000);
-      return remainingMinutes <= 0 ? 'due' : `${new Date(at).toLocaleTimeString()} (in ${remainingMinutes}m)`;
-    }
+
     async function showEnrollmentQR(result) {
       document.querySelector('#enrollment-code').textContent = result.enrollment_code;
       const image = document.querySelector('#enrollment-qr');
@@ -184,8 +774,8 @@
       }
       const response = await fetch('/api/admin/enrollment-qr', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tokenInput.value}` },
-        body: JSON.stringify({text: result.enrollment_code})
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+        body: JSON.stringify({ text: result.enrollment_code })
       });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -197,9 +787,7 @@
       note.textContent = 'Scan to fill the one-time code. Enter the HTTPS server URL if needed, then review and activate.';
       enrollmentDialog.showModal();
     }
-    function localDateTimeValue(date) {
-      return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-    }
+
     function showHistory(device) {
       historyDevice = device;
       const end = new Date();
@@ -211,6 +799,7 @@
       historyControls.hidden = false;
       loadHistory();
     }
+
     async function loadHistory() {
       if (!historyDevice) return;
       const from = new Date(document.querySelector('#history-from').value);
@@ -219,39 +808,37 @@
         return setMessage('Choose a valid start and end time.', true);
       }
       try {
+        ensureMap();
         const query = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), limit: '5000' });
-        const {locations} = await api(`/api/admin/devices/${encodeURIComponent(historyDevice.id)}/locations?${query}`);
+        const { locations } = await api(`/api/admin/devices/${encodeURIComponent(historyDevice.id)}/locations?${query}`);
         if (!locations.length) {
           if (historyLine) map.removeLayer(historyLine);
           historyLine = null;
           return setMessage(`No locations for ${historyDevice.name} in that time window.`);
         }
-        const points = locations.map(p => [p.latitude, p.longitude]).reverse();
+        const points = locations.map(point => [point.latitude, point.longitude]).reverse();
         map.fitBounds(points, { padding: [20, 20] });
         if (historyLine) map.removeLayer(historyLine);
         historyLine = L.polyline(points, { color: '#356ac3' }).addTo(map);
         setMessage(`Showing ${points.length} locations for ${historyDevice.name} in the selected window.`);
-      } catch (error) { setMessage(error.message, true); }
+      } catch (error) {
+        setMessage(error.message, true);
+      }
     }
-    function telemetryBool(value, on = 'on', off = 'off') {
-      return value == null ? '?' : value ? on : off;
-    }
-    function locationSourceLabel(source) {
-      return source === 'gps' ? 'GPS' : source === 'network' ? 'network (cell/Wi-Fi)' : source || 'unknown';
-    }
+
     async function showTelemetry(device) {
       try {
-        const {telemetry} = await api(`/api/admin/devices/${encodeURIComponent(device.id)}/telemetry?limit=200`);
+        const { telemetry } = await api(`/api/admin/devices/${encodeURIComponent(device.id)}/telemetry?limit=200`);
         document.querySelector('#telemetry-title').textContent = `Telemetry — ${device.name}`;
         const body = document.querySelector('#telemetry-table tbody');
         body.replaceChildren();
         if (!telemetry.length) {
           document.querySelector('#telemetry-summary').textContent = 'No telemetry samples yet. The device sends telemetry on config sync.';
         } else {
-          const wakeDelays = telemetry.map(t => t.wake_delay_seconds).filter(v => v != null);
-          const syncTimes = telemetry.map(t => t.sync_duration_ms).filter(v => v != null);
-          const screenOnCount = telemetry.filter(t => t.screen_on === true).length;
-          const idleCount = telemetry.filter(t => t.device_idle === true).length;
+          const wakeDelays = telemetry.map(sample => sample.wake_delay_seconds).filter(value => value != null);
+          const syncTimes = telemetry.map(sample => sample.sync_duration_ms).filter(value => value != null);
+          const screenOnCount = telemetry.filter(sample => sample.screen_on === true).length;
+          const idleCount = telemetry.filter(sample => sample.device_idle === true).length;
           const average = values => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
           document.querySelector('#telemetry-summary').textContent =
             `${telemetry.length} samples · screen on ${screenOnCount}/${telemetry.length} · Doze ${idleCount}/${telemetry.length}` +
@@ -273,7 +860,7 @@
               sample.battery_temperature_c == null ? '?' : `${sample.battery_temperature_c} °C`,
               sample.wake_delay_seconds == null ? '?' : `${sample.wake_delay_seconds}s`,
               sample.sync_duration_ms == null ? '?' : `${sample.sync_duration_ms}ms`,
-              sample.queue_size == null ? '?' : String(sample.queue_size),
+              sample.queue_size == null ? '?' : String(sample.queue_size)
             ];
             values.forEach(value => {
               const cell = document.createElement('td');
@@ -284,17 +871,49 @@
           }
         }
         telemetryDialog.showModal();
-      } catch (error) { setMessage(error.message, true); }
+      } catch (error) {
+        setMessage(error.message, true);
+      }
     }
+
+    function mapPopup(device) {
+      const point = device.current_location;
+      const popup = document.createElement('div');
+      const title = document.createElement('strong');
+      title.textContent = device.name;
+      const time = document.createElement('div');
+      time.textContent = new Date(point.recorded_at).toLocaleString();
+      const accuracy = document.createElement('div');
+      accuracy.textContent = `Accuracy: ${Math.round(point.accuracy_meters)} m`;
+      popup.append(title, time, accuracy);
+      if (point.location_source) {
+        const source = document.createElement('div');
+        source.textContent = `Source: ${locationSourceLabel(point.location_source)}`;
+        popup.append(source);
+      }
+      return popup;
+    }
+
     async function refresh() {
+      if (!authToken || !currentUser) return;
       try {
-        const {devices} = await api('/api/admin/devices');
+        ensureMap();
+        const { devices } = await api('/api/admin/devices');
         deviceList.replaceChildren();
-        markers.forEach(marker => map.removeLayer(marker)); markers = [];
+        markers.forEach(marker => map.removeLayer(marker));
+        markers = [];
+        const admin = isAdmin();
         for (const device of devices) {
-          const row = document.createElement('article'); row.className = 'device';
-          const name = document.createElement('span'); name.className = 'device-name'; name.textContent = device.name;
-          const status = document.createElement('span'); status.className = 'muted';
+          const row = document.createElement('article');
+          row.className = 'device';
+
+          const main = document.createElement('div');
+          main.className = 'device-main';
+          const name = document.createElement('span');
+          name.className = 'device-name';
+          name.textContent = device.name;
+          const status = document.createElement('span');
+          status.className = 'device-status';
           const battery = device.battery_percent ?? device.current_location?.battery_percent;
           const charging = device.charging === true ? ' · Charging' : '';
           if (device.revoked) {
@@ -313,6 +932,8 @@
           } else {
             status.textContent = 'Awaiting activation';
           }
+          main.append(name, status);
+
           const appliedVersion = device.applied_config?.version ?? 0;
           const desiredVersion = device.config.version;
           const isConfigPending = device.activated && appliedVersion !== desiredVersion;
@@ -321,23 +942,12 @@
           configStatus.textContent = !device.activated ? '' : isConfigPending
             ? `Settings not yet applied (desired v${desiredVersion}, device v${appliedVersion || 'unknown'})`
             : `Settings applied (v${appliedVersion})`;
-          const edit = document.createElement('button'); edit.textContent = 'Save settings';
-          edit.disabled = device.revoked;
-          const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = device.config.enabled;
-          enabled.disabled = device.revoked;
-          enabled.setAttribute('aria-label', `Tracking enabled for ${device.name}`);
-          const interval = document.createElement('input'); interval.type = 'number'; interval.min = '5'; interval.max = '86400'; interval.value = device.config.location_interval_seconds;
-          interval.disabled = device.revoked;
-          interval.title = 'Location interval (seconds)';
-          const sync = document.createElement('input'); sync.type = 'number'; sync.min = '5'; sync.max = '86400'; sync.value = device.config.sync_interval_seconds;
-          sync.disabled = device.revoked;
-          sync.title = 'Upload/config sync interval (seconds)';
-          const sleep = document.createElement('input'); sleep.type = 'number'; sleep.min = '10'; sleep.max = '604800'; sleep.value = device.config.sleep_duration_seconds;
-          sleep.disabled = device.revoked;
-          sleep.title = 'Config poll interval while tracking is disabled (seconds)';
+
           const appliedDetails = document.createElement('details');
-          const appliedSummary = document.createElement('summary'); appliedSummary.textContent = 'Last applied configuration';
+          const appliedSummary = document.createElement('summary');
+          appliedSummary.textContent = 'Last applied configuration';
           const appliedDescription = document.createElement('p');
+          appliedDescription.className = 'muted';
           if (device.applied_config) {
             const applied = device.applied_config;
             appliedDescription.textContent = `Applied ${device.applied_at ? new Date(device.applied_at).toLocaleString() : ''}: ${applied.enabled ? 'tracking on' : 'tracking off'}, location ${applied.location_interval_seconds}s, sync ${applied.sync_interval_seconds}s, disabled poll ${applied.sleep_duration_seconds}s, GPS timeout ${applied.gps_timeout_seconds}s, min distance ${applied.min_distance_meters}m (v${applied.version}).`;
@@ -345,86 +955,324 @@
             appliedDescription.textContent = 'The device has not acknowledged a configuration yet.';
           }
           appliedDetails.append(appliedSummary, appliedDescription);
+
           const telemetryButton = document.createElement('button');
+          telemetryButton.type = 'button';
           telemetryButton.textContent = 'Telemetry';
           telemetryButton.addEventListener('click', () => showTelemetry(device));
-          const history = document.createElement('button'); history.textContent = 'History'; history.addEventListener('click', () => showHistory(device));
-          const revoke = document.createElement('button'); revoke.textContent = 'Revoke'; revoke.disabled = device.revoked;
-          revoke.addEventListener('click', async () => {
-            if (!window.confirm(`Revoke ${device.name}? The client token will stop working.`)) return;
-            try { await api(`/api/admin/devices/${encodeURIComponent(device.id)}/revoke`, { method: 'POST' }); await refresh(); }
-            catch (error) { setMessage(error.message, true); }
-          });
-          const remove = document.createElement('button'); remove.textContent = 'Delete + history';
-          remove.addEventListener('click', async () => {
-            if (!window.confirm(`Permanently delete ${device.name} and all of its location history? This cannot be undone.`)) return;
-            try {
-              await api(`/api/admin/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' });
-              setMessage(`${device.name} and its location history were deleted.`);
-              await refresh();
-            } catch (error) { setMessage(error.message, true); }
-          });
-          edit.addEventListener('click', async () => {
-            try {
-              const config = { ...device.config, enabled: enabled.checked, location_interval_seconds: Number(interval.value), sync_interval_seconds: Number(sync.value), sleep_duration_seconds: Number(sleep.value) };
-              await api(`/api/admin/devices/${encodeURIComponent(device.id)}/config`, { method: 'PATCH', body: JSON.stringify(config) });
-              setMessage(`Settings saved for ${device.name}; waiting for the device to sync and acknowledge them.`);
-              await refresh();
-            } catch (error) { setMessage(error.message, true); }
-          });
-          const dirty = () => {
-            const changed = enabled.checked !== device.config.enabled ||
-              Number(interval.value) !== device.config.location_interval_seconds ||
-              Number(sync.value) !== device.config.sync_interval_seconds ||
-              Number(sleep.value) !== device.config.sleep_duration_seconds;
-            edit.disabled = device.revoked || !changed;
-            configStatus.className = `config-state ${changed ? 'config-unsaved' : isConfigPending ? 'config-pending' : 'config-applied'}`;
-            configStatus.textContent = changed ? 'Unsaved changes — not sent to server' : !device.activated ? '' : isConfigPending
-              ? `Saved · waiting for device sync (desired v${desiredVersion}, applied v${appliedVersion || 'unknown'})`
-              : `Applied by device (v${appliedVersion})`;
-          };
-          [enabled, interval, sync, sleep].forEach(input => input.addEventListener('input', dirty));
-          [enabled, interval, sync, sleep].forEach(input => input.addEventListener('change', dirty));
-          dirty();
-          row.append(name, status, configStatus, appliedDetails, enabled,
-            document.createTextNode('Location every (s)'), interval,
-            document.createTextNode('Sync every (s)'), sync,
-            document.createTextNode('Disabled poll (s)'), sleep,
-            edit, telemetryButton, history, revoke, remove);
+          const history = document.createElement('button');
+          history.type = 'button';
+          history.textContent = 'History';
+          history.addEventListener('click', () => showHistory(device));
+
+          row.append(main, configStatus, appliedDetails);
+
+          if (admin) {
+            const controls = document.createElement('div');
+            controls.className = 'device-controls';
+            const enabledLabel = document.createElement('label');
+            enabledLabel.textContent = 'Tracking';
+            const enabled = document.createElement('input');
+            enabled.type = 'checkbox';
+            enabled.checked = device.config.enabled;
+            enabled.disabled = device.revoked;
+            enabled.setAttribute('aria-label', `Tracking enabled for ${device.name}`);
+            enabledLabel.append(enabled);
+            const intervalLabel = document.createElement('label');
+            intervalLabel.textContent = 'Location every (s)';
+            const interval = document.createElement('input');
+            interval.type = 'number';
+            interval.min = '5';
+            interval.max = '86400';
+            interval.value = device.config.location_interval_seconds;
+            interval.disabled = device.revoked;
+            intervalLabel.append(interval);
+            const syncLabel = document.createElement('label');
+            syncLabel.textContent = 'Sync every (s)';
+            const sync = document.createElement('input');
+            sync.type = 'number';
+            sync.min = '5';
+            sync.max = '86400';
+            sync.value = device.config.sync_interval_seconds;
+            sync.disabled = device.revoked;
+            syncLabel.append(sync);
+            const sleepLabel = document.createElement('label');
+            sleepLabel.textContent = 'Disabled poll (s)';
+            const sleep = document.createElement('input');
+            sleep.type = 'number';
+            sleep.min = '10';
+            sleep.max = '604800';
+            sleep.value = device.config.sleep_duration_seconds;
+            sleep.disabled = device.revoked;
+            sleepLabel.append(sleep);
+            controls.append(enabledLabel, intervalLabel, syncLabel, sleepLabel);
+            row.append(controls);
+
+            const actions = document.createElement('div');
+            actions.className = 'device-actions';
+            const edit = document.createElement('button');
+            edit.type = 'button';
+            edit.className = 'btn-primary';
+            edit.textContent = 'Save settings';
+            edit.disabled = true;
+            const revoke = document.createElement('button');
+            revoke.type = 'button';
+            revoke.textContent = 'Revoke';
+            revoke.disabled = device.revoked;
+            revoke.addEventListener('click', async () => {
+              if (!window.confirm(`Revoke ${device.name}? The client token will stop working.`)) return;
+              try {
+                await api(`/api/admin/devices/${encodeURIComponent(device.id)}/revoke`, { method: 'POST' });
+                await refresh();
+              } catch (error) {
+                setMessage(error.message, true);
+              }
+            });
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'btn-danger';
+            remove.textContent = 'Delete + history';
+            remove.addEventListener('click', async () => {
+              if (!window.confirm(`Permanently delete ${device.name} and all of its location history? This cannot be undone.`)) return;
+              try {
+                await api(`/api/admin/devices/${encodeURIComponent(device.id)}`, { method: 'DELETE' });
+                setMessage(`${device.name} and its location history were deleted.`);
+                await refresh();
+              } catch (error) {
+                setMessage(error.message, true);
+              }
+            });
+            edit.addEventListener('click', async () => {
+              try {
+                const config = {
+                  ...device.config,
+                  enabled: enabled.checked,
+                  location_interval_seconds: Number(interval.value),
+                  sync_interval_seconds: Number(sync.value),
+                  sleep_duration_seconds: Number(sleep.value)
+                };
+                await api(`/api/admin/devices/${encodeURIComponent(device.id)}/config`, { method: 'PATCH', body: JSON.stringify(config) });
+                setMessage(`Settings saved for ${device.name}; waiting for the device to sync and acknowledge them.`);
+                await refresh();
+              } catch (error) {
+                setMessage(error.message, true);
+              }
+            });
+            const dirty = () => {
+              const changed = enabled.checked !== device.config.enabled ||
+                Number(interval.value) !== device.config.location_interval_seconds ||
+                Number(sync.value) !== device.config.sync_interval_seconds ||
+                Number(sleep.value) !== device.config.sleep_duration_seconds;
+              edit.disabled = device.revoked || !changed;
+              configStatus.className = `config-state ${changed ? 'config-unsaved' : isConfigPending ? 'config-pending' : 'config-applied'}`;
+              configStatus.textContent = changed ? 'Unsaved changes — not sent to server' : !device.activated ? '' : isConfigPending
+                ? `Saved · waiting for device sync (desired v${desiredVersion}, applied v${appliedVersion || 'unknown'})`
+                : `Applied by device (v${appliedVersion})`;
+            };
+            [enabled, interval, sync, sleep].forEach(input => input.addEventListener('input', dirty));
+            [enabled, interval, sync, sleep].forEach(input => input.addEventListener('change', dirty));
+            dirty();
+            actions.append(edit, telemetryButton, history, revoke, remove);
+            row.append(actions);
+          } else {
+            const actions = document.createElement('div');
+            actions.className = 'device-actions';
+            const readOnly = document.createElement('span');
+            readOnly.className = 'muted';
+            readOnly.textContent = 'Read-only access';
+            actions.append(readOnly, telemetryButton, history);
+            row.append(actions);
+          }
           deviceList.append(row);
+
           if (device.current_location) {
-            const p = device.current_location;
-            const source = p.location_source ? `<br>Source: ${locationSourceLabel(p.location_source)}` : '';
-            const marker = L.marker([p.latitude, p.longitude]).addTo(map).bindPopup(`${device.name}<br>${new Date(p.recorded_at).toLocaleString()}<br>Accuracy: ${Math.round(p.accuracy_meters)} m${source}`);
+            const point = device.current_location;
+            const marker = L.marker([point.latitude, point.longitude]).addTo(map).bindPopup(mapPopup(device));
             markers.push(marker);
           }
         }
         if (markers.length) map.fitBounds(L.featureGroup(markers).getBounds().pad(.25));
         setMessage(`${devices.length} device(s) loaded.`);
-      } catch (error) { setMessage(error.message, true); }
+      } catch (error) {
+        setMessage(error.message, true);
+      }
     }
-    document.querySelector('#connect').addEventListener('click', () => {
-      sessionStorage.setItem('admin-token', tokenInput.value);
-      refresh();
-      loadMQTTSettings();
+
+    async function loadUsers() {
+      if (!isAdmin()) return;
+      try {
+        const { users } = await api('/api/admin/users');
+        renderUsers(users);
+      } catch (error) {
+        setUserMessage(error.message, true);
+      }
+    }
+
+    function renderUsers(users) {
+      usersList.replaceChildren();
+      if (!users.length) {
+        const empty = document.createElement('p');
+        empty.className = 'muted';
+        empty.textContent = 'No additional accounts yet. The admin key remains the bootstrap login.';
+        usersList.append(empty);
+        return;
+      }
+      for (const user of users) {
+        const row = document.createElement('div');
+        row.className = 'user-row';
+        const main = document.createElement('div');
+        main.className = 'user-row-main';
+        const name = document.createElement('strong');
+        name.textContent = user.username;
+        const display = document.createElement('small');
+        display.textContent = user.display_name || user.username;
+        main.append(name, display);
+        const role = document.createElement('span');
+        role.className = 'role-badge';
+        role.textContent = user.role === 'admin' ? 'Admin' : 'User';
+        const meta = document.createElement('span');
+        meta.className = 'user-row-meta';
+        meta.textContent = `Created ${new Date(user.created_at).toLocaleDateString()}${user.last_login_at ? ` · Last login ${new Date(user.last_login_at).toLocaleString()}` : ' · Never signed in'}`;
+        row.append(main, role, meta);
+        usersList.append(row);
+      }
+    }
+
+    function navigate(section) {
+      const sections = {
+        dashboard: { title: 'Dashboard', eyebrow: 'Overview' },
+        administrate: { title: 'Administrate', eyebrow: 'Server and access' },
+        profile: { title: 'Profile', eyebrow: 'Your account' }
+      };
+      if (!sections[section] || (section === 'administrate' && !isAdmin())) {
+        section = 'dashboard';
+      }
+      activeSection = section;
+      for (const key of Object.keys(sections)) {
+        const page = document.querySelector(`#section-${key}`);
+        if (page) page.hidden = key !== section;
+      }
+      document.querySelectorAll('.nav-item[data-section]').forEach(item => {
+        item.classList.toggle('active', item.dataset.section === section);
+      });
+      document.querySelector('#page-title').textContent = sections[section].title;
+      document.querySelector('#page-eyebrow').textContent = sections[section].eyebrow;
+      closeMobileSidebar();
+      if (location.hash !== `#${section}`) history.replaceState(null, '', `#${section}`);
+      if (section === 'dashboard') {
+        ensureMap();
+        refresh();
+      } else if (section === 'administrate') {
+        loadMQTTSettings();
+        loadUsers();
+      } else if (section === 'profile') {
+        renderProfile();
+      }
+    }
+
+    function applySidebarState() {
+      const collapsed = localStorage.getItem('sidebar-collapsed') === '1';
+      appShell.classList.toggle('sidebar-collapsed', collapsed);
+      document.querySelector('#sidebar-collapse').setAttribute('aria-expanded', String(!collapsed));
+    }
+
+    function openMobileSidebar() {
+      appShell.classList.add('sidebar-open');
+    }
+
+    function closeMobileSidebar() {
+      appShell.classList.remove('sidebar-open');
+    }
+
+    async function bootstrap() {
+      await loadBuildInfo();
+      applySidebarState();
+      if (!authToken) {
+        showLogin();
+        return;
+      }
+      try {
+        const { user } = await api('/api/auth/me');
+        currentUser = user;
+        showApp();
+        const initial = location.hash.slice(1);
+        navigate(['dashboard', 'administrate', 'profile'].includes(initial) ? initial : 'dashboard');
+      } catch (_) {
+        clearSession();
+        showLogin();
+      }
+    }
+
+    loginTabs.forEach(tab => tab.addEventListener('click', () => setLoginMode(tab.dataset.loginMode)));
+    loginForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      loginError.textContent = '';
+      const submit = loginForm.querySelector('button[type=submit]');
+      submit.disabled = true;
+      try {
+        const body = loginMode === 'admin'
+          ? { admin_key: document.querySelector('#login-admin-key').value }
+          : {
+              username: document.querySelector('#login-username').value.trim(),
+              password: document.querySelector('#login-password').value
+            };
+        const result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify(body) }, { skipAuth: true });
+        authToken = result.token;
+        currentUser = result.user;
+        sessionStorage.setItem(sessionTokenKey, authToken);
+        sessionStorage.removeItem(adminTokenKey);
+        document.querySelector('#login-admin-key').value = '';
+        document.querySelector('#login-password').value = '';
+        showApp();
+        navigate(location.hash.slice(1) || 'dashboard');
+      } catch (error) {
+        loginError.textContent = error.message;
+      } finally {
+        submit.disabled = false;
+      }
     });
+
+    document.querySelector('#logout-button').addEventListener('click', logout);
+    document.querySelector('#profile-logout').addEventListener('click', logout);
+    document.querySelector('#user-chip').addEventListener('click', () => navigate('profile'));
+    document.querySelectorAll('.nav-item[data-section]').forEach(item => {
+      item.addEventListener('click', () => navigate(item.dataset.section));
+    });
+    document.querySelector('#sidebar-collapse').addEventListener('click', () => {
+      const collapsed = !appShell.classList.contains('sidebar-collapsed');
+      appShell.classList.toggle('sidebar-collapsed', collapsed);
+      localStorage.setItem('sidebar-collapsed', collapsed ? '1' : '0');
+      document.querySelector('#sidebar-collapse').setAttribute('aria-expanded', String(!collapsed));
+    });
+    document.querySelector('#mobile-menu').addEventListener('click', openMobileSidebar);
+    document.querySelector('#sidebar-scrim').addEventListener('click', closeMobileSidebar);
+
     document.querySelector('#create').addEventListener('click', async () => {
+      if (!isAdmin()) return;
       const name = document.querySelector('#new-name').value.trim();
       if (!name) return setMessage('Enter a device name first.', true);
       try {
-        const result = await api('/api/admin/devices', { method: 'POST', body: JSON.stringify({name}) });
-        try { await showEnrollmentQR(result); }
-        catch (error) {
+        const result = await api('/api/admin/devices', { method: 'POST', body: JSON.stringify({ name }) });
+        try {
+          await showEnrollmentQR(result);
+        } catch (error) {
           window.prompt(`QR generation failed: ${error.message}\nCopy this one-time enrollment code:`, result.enrollment_code);
         }
         document.querySelector('#new-name').value = '';
         await refresh();
-      } catch (error) { setMessage(error.message, true); }
+      } catch (error) {
+        setMessage(error.message, true);
+      }
     });
+
     document.querySelector('#copy-enrollment-code').addEventListener('click', async () => {
       const code = document.querySelector('#enrollment-code').textContent;
-      try { await navigator.clipboard.writeText(code); setMessage('Enrollment code copied.'); }
-      catch (_) { window.prompt('Copy the one-time enrollment code:', code); }
+      try {
+        await navigator.clipboard.writeText(code);
+        setMessage('Enrollment code copied.');
+      } catch (_) {
+        window.prompt('Copy the one-time enrollment code:', code);
+      }
     });
     document.querySelector('#close-enrollment-dialog').addEventListener('click', () => enrollmentDialog.close());
     enrollmentDialog.addEventListener('close', () => {
@@ -436,7 +1284,7 @@
     document.querySelector('#mqtt-refresh').addEventListener('click', loadMQTTSettings);
     document.querySelector('#mqtt-form').addEventListener('submit', async event => {
       event.preventDefault();
-      if (!tokenInput.value) return setMessage('Enter the admin token first.', true);
+      if (!isAdmin()) return;
       const payload = {
         enabled: document.querySelector('#mqtt-enabled').checked,
         host: document.querySelector('#mqtt-host').value.trim(),
@@ -446,7 +1294,7 @@
         discovery_enabled: document.querySelector('#mqtt-discovery-enabled').checked,
         discovery_prefix: document.querySelector('#mqtt-discovery-prefix').value.trim(),
         base_topic: document.querySelector('#mqtt-base-topic').value.trim(),
-        client_id: document.querySelector('#mqtt-client-id').value.trim(),
+        client_id: document.querySelector('#mqtt-client-id').value.trim()
       };
       const password = document.querySelector('#mqtt-password').value;
       if (document.querySelector('#mqtt-clear-password').checked) payload.password = '';
@@ -458,10 +1306,30 @@
         document.querySelector('#mqtt-clear-password').checked = false;
         setMessage('MQTT settings saved.');
       } catch (error) {
-        renderMQTTStatus({last_error: error.message});
+        renderMQTTStatus({ last_error: error.message });
         setMessage(error.message, true);
       }
     });
+
+    createUserForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!isAdmin()) return;
+      const payload = {
+        username: document.querySelector('#new-username').value.trim(),
+        display_name: document.querySelector('#new-display-name').value.trim(),
+        password: document.querySelector('#new-password').value,
+        role: document.querySelector('#new-role').value
+      };
+      try {
+        const result = await api('/api/admin/users', { method: 'POST', body: JSON.stringify(payload) });
+        setUserMessage(`Account ${result.user.username} created.`);
+        createUserForm.reset();
+        await loadUsers();
+      } catch (error) {
+        setUserMessage(error.message, true);
+      }
+    });
+
     document.querySelector('#history-days').addEventListener('input', event => {
       const days = Number(event.target.value);
       document.querySelector('#history-days-label').textContent = String(days);
@@ -474,11 +1342,16 @@
       historyControls.hidden = true;
       historyDevice = null;
     });
-    if (tokenInput.value) {
-      refresh();
-      loadMQTTSettings();
-    }
-    window.setInterval(() => { if (tokenInput.value) refresh(); }, 60000);
+
+    window.addEventListener('hashchange', () => {
+      if (!currentUser) return;
+      navigate(location.hash.slice(1) || 'dashboard');
+    });
+    window.setInterval(() => {
+      if (authToken && currentUser && activeSection === 'dashboard') refresh();
+    }, 60000);
+
+    bootstrap();
   </script>
 </body>
 </html>

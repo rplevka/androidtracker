@@ -12,6 +12,82 @@ import (
 	"github.com/roman/kidstracker/internal/domain"
 )
 
+func TestPostgresUserAndSessionRoundTrip(t *testing.T) {
+	connectionString := os.Getenv("DATABASE_URL")
+	if connectionString == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	repository, err := Open(ctx, connectionString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	username := fmt.Sprintf("integration-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("user-%d", time.Now().UnixNano())
+	defer func() { _, _ = repository.pool.Exec(context.Background(), "DELETE FROM users WHERE id = $1", id) }()
+
+	user, err := repository.CreateUser(ctx, id, username, "Integration User", "pbkdf2-sha256$600000$c2FsdA$aGFzaA", domain.RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Username != username || user.Role != domain.RoleUser {
+		t.Fatalf("unexpected created user: %#v", user)
+	}
+	if _, err := repository.CreateUser(ctx, id+"-dup", username, "Duplicate", "hash", domain.RoleUser); err != ErrDuplicate {
+		t.Fatalf("duplicate username error = %v, want %v", err, ErrDuplicate)
+	}
+	loaded, err := repository.UserByUsername(ctx, username)
+	if err != nil || loaded.ID != id || loaded.PasswordHash == "" {
+		t.Fatalf("user lookup: user=%#v err=%v", loaded, err)
+	}
+	users, err := repository.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range users {
+		if item.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("created user was not listed")
+	}
+	if err := repository.MarkUserLogin(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionHash := sha256.Sum256([]byte("session-" + id))
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	if err := repository.CreateSession(ctx, sessionHash[:], &id, domain.RoleUser, "test", expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	session, err := repository.SessionByToken(ctx, sessionHash[:])
+	if err != nil || session.UserID == nil || *session.UserID != id || session.Username != username || session.Role != domain.RoleUser {
+		t.Fatalf("session lookup: session=%#v err=%v", session, err)
+	}
+	if err := repository.DeleteSession(ctx, sessionHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.SessionByToken(ctx, sessionHash[:]); err != ErrNotFound {
+		t.Fatalf("deleted session error = %v, want %v", err, ErrNotFound)
+	}
+
+	expiredHash := sha256.Sum256([]byte("expired-" + id))
+	if err := repository.CreateSession(ctx, expiredHash[:], &id, domain.RoleUser, "test", time.Now().UTC().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.SessionByToken(ctx, expiredHash[:]); err != ErrNotFound {
+		t.Fatalf("expired session error = %v, want %v", err, ErrNotFound)
+	}
+}
+
 func TestPostgresPostGISRoundTrip(t *testing.T) {
 	connectionString := os.Getenv("DATABASE_URL")
 	if connectionString == "" {

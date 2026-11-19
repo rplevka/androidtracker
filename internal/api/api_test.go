@@ -27,6 +27,8 @@ type fakeRepository struct {
 	appliedVersion *int64
 	telemetry      []domain.Telemetry
 	mqttRecord     domain.MQTTRecord
+	users          map[string]domain.User
+	sessions       map[string]domain.Session
 }
 
 func (f *fakeRepository) Ping(context.Context) error { return nil }
@@ -90,6 +92,71 @@ func (f *fakeRepository) SaveMQTTSettings(_ context.Context, settings domain.MQT
 	f.mqttRecord.PasswordCiphertext = passwordCiphertext
 	return nil
 }
+func (f *fakeRepository) CreateUser(_ context.Context, id, username, displayName, passwordHash, role string) (domain.User, error) {
+	if f.users == nil {
+		f.users = make(map[string]domain.User)
+	}
+	if _, exists := f.users[username]; exists {
+		return domain.User{}, store.ErrDuplicate
+	}
+	user := domain.User{ID: id, Username: username, DisplayName: displayName,
+		PasswordHash: passwordHash, Role: role, CreatedAt: time.Now().UTC()}
+	f.users[username] = user
+	return user, nil
+}
+func (f *fakeRepository) UserByUsername(_ context.Context, username string) (domain.User, error) {
+	user, exists := f.users[username]
+	if !exists {
+		return domain.User{}, store.ErrNotFound
+	}
+	return user, nil
+}
+func (f *fakeRepository) ListUsers(context.Context) ([]domain.User, error) {
+	users := make([]domain.User, 0, len(f.users))
+	for _, user := range f.users {
+		users = append(users, user)
+	}
+	return users, nil
+}
+func (f *fakeRepository) MarkUserLogin(_ context.Context, userID string) error {
+	for username, user := range f.users {
+		if user.ID == userID {
+			now := time.Now().UTC()
+			user.LastLoginAt = &now
+			f.users[username] = user
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+func (f *fakeRepository) CreateSession(_ context.Context, tokenHash []byte, userID *string, role, label string, expiresAt time.Time) error {
+	if f.sessions == nil {
+		f.sessions = make(map[string]domain.Session)
+	}
+	f.sessions[string(tokenHash)] = domain.Session{UserID: userID, Role: role, Label: label, ExpiresAt: expiresAt}
+	return nil
+}
+func (f *fakeRepository) SessionByToken(_ context.Context, tokenHash []byte) (domain.Session, error) {
+	session, exists := f.sessions[string(tokenHash)]
+	if !exists || time.Now().After(session.ExpiresAt) {
+		return domain.Session{}, store.ErrNotFound
+	}
+	if session.UserID != nil {
+		for _, user := range f.users {
+			if user.ID == *session.UserID {
+				session.Username = user.Username
+				session.DisplayName = user.DisplayName
+				return session, nil
+			}
+		}
+		return domain.Session{}, store.ErrNotFound
+	}
+	return session, nil
+}
+func (f *fakeRepository) DeleteSession(_ context.Context, tokenHash []byte) error {
+	delete(f.sessions, string(tokenHash))
+	return nil
+}
 
 type fakeMQTT struct {
 	settings  domain.MQTTSettings
@@ -118,6 +185,17 @@ func (f *fakeMQTT) PublishTelemetry(_ domain.Device, telemetry domain.Telemetry)
 }
 func (f *fakeMQTT) PublishConfig(device domain.Device) { f.configs = append(f.configs, device.ID) }
 func (f *fakeMQTT) RemoveDevice(id string)             { f.removed = append(f.removed, id) }
+
+func TestVersionEndpointIsPublic(t *testing.T) {
+	server := New(&fakeRepository{}, "admin-secret")
+	request := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"version":`) ||
+		!strings.Contains(recorder.Body.String(), `"commit":`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
 
 func TestDeviceRoutesRequireBearerToken(t *testing.T) {
 	server := New(&fakeRepository{}, "admin-secret")
@@ -601,5 +679,126 @@ func TestRandomTokensAreDifferent(t *testing.T) {
 	}
 	if first == second {
 		t.Fatal("random token collision")
+	}
+}
+
+type loginResponse struct {
+	Token string       `json:"token"`
+	User  authUserView `json:"user"`
+}
+
+func loginRequest(t *testing.T, server *Server, body string) loginResponse {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response loginResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Token == "" {
+		t.Fatal("login response did not contain a token")
+	}
+	return response
+}
+
+func TestAdminKeyLoginCreatesSessionAndLogoutRevokesIt(t *testing.T) {
+	server := New(&fakeRepository{}, "admin-secret")
+	login := loginRequest(t, server, `{"admin_key":"admin-secret"}`)
+	if login.User.Role != domain.RoleAdmin || login.User.AuthType != domain.AuthTypeAdminKey {
+		t.Fatalf("unexpected admin login user: %#v", login.User)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	request.Header.Set("Authorization", "Bearer "+login.Token)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"role":"admin"`) {
+		t.Fatalf("me status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	request.Header.Set("Authorization", "Bearer "+login.Token)
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	request.Header.Set("Authorization", "Bearer "+login.Token)
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked session status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAdminCanCreateUserAndUserCanReadButNotAdminister(t *testing.T) {
+	repo := &fakeRepository{devices: []domain.Device{{ID: "device-1", Name: "Tracker"}}}
+	server := New(repo, "admin-secret")
+	admin := loginRequest(t, server, `{"admin_key":"admin-secret"}`)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(
+		`{"username":"viewer","display_name":"Viewer","password":"correct horse battery","role":"user"}`))
+	request.Header.Set("Authorization", "Bearer "+admin.Token)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"username":"viewer"`) {
+		t.Fatalf("list users status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	viewer := loginRequest(t, server, `{"username":"viewer","password":"correct horse battery"}`)
+	if viewer.User.Role != domain.RoleUser || viewer.User.AuthType != domain.AuthTypePassword {
+		t.Fatalf("unexpected viewer login user: %#v", viewer.User)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/admin/devices", nil)
+	request.Header.Set("Authorization", "Bearer "+viewer.Token)
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("viewer devices status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	for _, route := range []struct{ method, path, body string }{
+		{http.MethodGet, "/api/admin/mqtt", ""},
+		{http.MethodGet, "/api/admin/users", ""},
+		{http.MethodPost, "/api/admin/users", `{"username":"other","password":"another long password","role":"user"}`},
+	} {
+		request = httptest.NewRequest(route.method, route.path, strings.NewReader(route.body))
+		request.Header.Set("Authorization", "Bearer "+viewer.Token)
+		recorder = httptest.NewRecorder()
+		server.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s %s status = %d, want %d", route.method, route.path, recorder.Code, http.StatusForbidden)
+		}
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"viewer","password":"wrong password"}`))
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(
+		`{"username":"viewer","display_name":"Duplicate","password":"another long password","role":"user"}`))
+	request.Header.Set("Authorization", "Bearer "+admin.Token)
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("duplicate user status = %d, want %d", recorder.Code, http.StatusConflict)
 	}
 }

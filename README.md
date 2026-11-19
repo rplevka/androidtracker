@@ -10,7 +10,7 @@ Location acquisition prefers GPS and falls back to Android's network provider (c
 
 - `cmd/server`, `internal/api`: Go API, one-time device enrollment, bearer-token authentication, config polling, idempotent batch uploads, admin API, and enrollment QR generation.
 - `internal/store/migrations`: PostgreSQL schema with PostGIS `geography(Point,4326)` and spatial index.
-- `web/index.html`: admin device list, current-position map, history display and configuration controls.
+- `web/index.html`: login screen, collapsible dashboard navigation, device map and history, configuration controls, MQTT settings and user administration.
 - `android/`: native Android client targeting API 28 / Android 9.
 - `scripts/android-debloat.sh`: opt-in, reversible ADB package disabling. It does not run automatically and does not uninstall packages.
 
@@ -54,6 +54,15 @@ ghcr.io/rplevka/androidtracker-api:main
 ghcr.io/rplevka/androidtracker-api:sha-<commit>
 ```
 
+Pull request images are built after the reusable CI suite passes:
+
+```text
+ghcr.io/rplevka/androidtracker-api:pr-<number>
+ghcr.io/rplevka/androidtracker-api:pr-<number>-<short-head-commit>
+```
+
+Use the immutable `pr-<number>-<short-head-commit>` tag for a test deployment. The `pr-<number>` tag follows the latest push to that PR. Images from forks and Dependabot PRs are built but not pushed because their token cannot write packages.
+
 The package is public, so these can be pulled anonymously:
 
 ```sh
@@ -75,6 +84,19 @@ export DATABASE_URL="postgres://tracker:$POSTGRES_PASSWORD@localhost:5432/kidstr
 go run ./cmd/server
 ```
 
+## Accounts and login
+
+The web UI at `/` supports two sign-in methods:
+
+- **Admin key**: the `ADMIN_TOKEN` configured for the server. This is the bootstrap login and retains full access.
+- **Username and password**: an account created by an administrator under **Administrate → User accounts**.
+
+Administrators can manage devices, MQTT settings and accounts. Regular users can sign in and view the dashboard, device status, trip history and telemetry, but cannot change settings, revoke devices or create accounts. The API enforces the same split; user sessions receive `403 Forbidden` on administrative routes.
+
+Passwords are stored as salted PBKDF2-SHA256 hashes. Login creates a random session token; only its SHA-256 digest is stored in PostgreSQL, and sessions expire after 24 hours. The browser keeps the session token in `sessionStorage` and sends it as a bearer token. The admin key is still accepted directly as a bearer token for existing scripts and automation.
+
+Deployments expose their version, commit and build time at `GET /api/version`; the login footer and the sidebar show the short commit. Published images receive the branch and full Git commit through Docker build arguments.
+
 ## Enrollment and API
 
 1. In the admin page, create a device. Over HTTPS the page displays a QR containing only the one-time enrollment code; manual code entry remains available.
@@ -82,7 +104,16 @@ go run ./cmd/server
 3. Enrollment returns a high-entropy device bearer token; the server stores only its SHA-256 digest. Enrollment codes expire after 24 hours and are single-use. Admins can revoke a device from the UI, which immediately invalidates its token.
 4. The app collects fixes on its location interval; on the sync interval it fetches `/v1/config`, acknowledges the applied version at `/v1/config/ack`, and uploads the batch, using `Authorization: Bearer <device-token>`.
 
-Admin API requests use `Authorization: Bearer $ADMIN_TOKEN`:
+Authentication and account endpoints:
+
+```text
+POST /api/auth/login
+POST /api/auth/logout
+GET  /api/auth/me
+GET  /api/version
+```
+
+Administrative API requests use `Authorization: Bearer $ADMIN_TOKEN`, or the token returned by `POST /api/auth/login`:
 
 ```text
 POST  /api/admin/devices
@@ -95,7 +126,11 @@ GET   /api/admin/mqtt
 PUT   /api/admin/mqtt
 POST  /api/admin/devices/{id}/revoke
 DELETE /api/admin/devices/{id}
+GET   /api/admin/users
+POST  /api/admin/users
 ```
+
+`GET` device, history and telemetry routes are available to both roles; device creation, configuration, deletion, MQTT settings and user administration require an administrator.
 
 Configuration bounds are `location_interval_seconds` 5–86400 seconds, `sync_interval_seconds` 5–86400 seconds, `sleep_duration_seconds` 10–604800 seconds, and GPS timeout 5–180 seconds. `PATCH` accepts a partial configuration object; omitted fields keep their current values. The short 5/10-second minima are supported for debugging but can consume substantial battery. Android Doze and alarm quotas can still defer background wakes. Location interval controls location fixes (GPS first, with network fallback) while enabled; sync interval controls batch upload and config polling; sleep duration controls config polling while tracking is disabled. Each client location ID is unique per device, so retried batches do not create duplicate history points.
 

@@ -10,6 +10,7 @@ import (
 
 var (
 	ErrNotFound          = errors.New("not found")
+	ErrDuplicate         = errors.New("already exists")
 	ErrInvalidEnrollment = errors.New("invalid or already-used enrollment code")
 )
 
@@ -31,4 +32,11 @@ type Repository interface {
 	TelemetryHistory(context.Context, string, time.Time, time.Time, int) ([]domain.Telemetry, error)
 	GetMQTTSettings(context.Context) (domain.MQTTRecord, error)
 	SaveMQTTSettings(context.Context, domain.MQTTSettings, []byte) error
+	CreateUser(context.Context, string, string, string, string, string) (domain.User, error)
+	UserByUsername(context.Context, string) (domain.User, error)
+	ListUsers(context.Context) ([]domain.User, error)
+	MarkUserLogin(context.Context, string) error
+	CreateSession(context.Context, []byte, *string, string, string, time.Time) error
+	SessionByToken(context.Context, []byte) (domain.Session, error)
+	DeleteSession(context.Context, []byte) error
 }
