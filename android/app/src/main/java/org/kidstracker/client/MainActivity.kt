@@ -2,10 +2,14 @@ package org.kidstracker.client
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlarmManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -33,6 +37,9 @@ class MainActivity : Activity() {
     private lateinit var setupPanel: LinearLayout
     private lateinit var statusPanel: LinearLayout
     private lateinit var syncButton: Button
+    private lateinit var reliabilityStatus: TextView
+    private lateinit var batterySettingsButton: Button
+    private lateinit var exactAlarmButton: Button
     private var selectedTab = TAB_SETUP
     private val preferences by lazy { getSharedPreferences(TrackerService.PREFERENCES, MODE_PRIVATE) }
     private val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
@@ -108,6 +115,18 @@ class MainActivity : Activity() {
             setOnClickListener { forceSync() }
         }
         statusPanel.addView(syncButton, match())
+        reliabilityStatus = TextView(this).apply { textSize = 14f }
+        statusPanel.addView(reliabilityStatus, match())
+        batterySettingsButton = Button(this).apply {
+            text = "Allow unrestricted battery"
+            setOnClickListener { openBatteryOptimizationSettings() }
+        }
+        statusPanel.addView(batterySettingsButton, match())
+        exactAlarmButton = Button(this).apply {
+            text = "Allow exact alarms"
+            setOnClickListener { openExactAlarmSettings() }
+        }
+        statusPanel.addView(exactAlarmButton, match())
         statusDetails = TextView(this).apply { textSize = 16f }
         val scroll = ScrollView(this).apply { addView(statusDetails) }
         statusPanel.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -150,6 +169,7 @@ class MainActivity : Activity() {
         syncButton.visibility = if (activated) View.VISIBLE else View.GONE
         syncButton.isEnabled = activated && syncStatus != "Syncing"
         syncButton.text = if (syncStatus == "Syncing") "Syncing…" else "Sync now"
+        renderReliabilityStatus(activated)
 
         val config = try {
             JSONObject(preferences.getString(TrackerService.PREF_CONFIG, "{}").orEmpty())
@@ -193,6 +213,60 @@ class MainActivity : Activity() {
             appendLine("Last location: ${formatTime(lastLocation)}" +
                 if (lastLocationSource.isNullOrBlank()) "" else " via ${LocationSource.label(lastLocationSource)}")
             append("Next scheduled wake: ${formatTime(nextWake)}")
+        }
+    }
+
+    private fun renderReliabilityStatus(activated: Boolean) {
+        if (!activated) {
+            reliabilityStatus.visibility = View.GONE
+            batterySettingsButton.visibility = View.GONE
+            exactAlarmButton.visibility = View.GONE
+            return
+        }
+        val ignoringBatteryOptimizations = getSystemService(PowerManager::class.java)
+            .isIgnoringBatteryOptimizations(packageName)
+        val exactAlarmsAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+
+        reliabilityStatus.visibility = View.VISIBLE
+        reliabilityStatus.text = buildString {
+            appendLine("Battery optimization: ${if (ignoringBatteryOptimizations) "unrestricted" else "optimized — short intervals may be delayed"}")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                appendLine("Exact alarms: ${if (exactAlarmsAllowed) "allowed" else "not allowed"}")
+            }
+            when {
+                !ignoringBatteryOptimizations -> append("Allow unrestricted battery for reliable short intervals.")
+                !exactAlarmsAllowed -> append("Allow exact alarms for more precise wakeups.")
+            }
+        }
+        batterySettingsButton.visibility = if (ignoringBatteryOptimizations) View.GONE else View.VISIBLE
+        exactAlarmButton.visibility = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !exactAlarmsAllowed) View.VISIBLE else View.GONE
+    }
+
+    private fun openBatteryOptimizationSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:$packageName")))
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (_: Exception) {
+                // This ROM does not expose a battery optimization settings screen.
+            }
+        }
+    }
+
+    private fun openExactAlarmSettings() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                Uri.parse("package:$packageName")))
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM))
+            } catch (_: Exception) {
+                // Exact alarm access is not configurable on this ROM.
+            }
         }
     }
 

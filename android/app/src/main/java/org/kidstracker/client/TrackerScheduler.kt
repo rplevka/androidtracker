@@ -18,7 +18,12 @@ object TrackerScheduler {
         val whenMillis = System.currentTimeMillis() + (delaySeconds.coerceAtLeast(0) * 1000L)
         context.getSharedPreferences(TrackerService.PREFERENCES, Context.MODE_PRIVATE).edit()
             .putLong(TrackerService.PREF_NEXT_WAKE, whenMillis).apply()
-        alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, whenMillis, pendingIntent(context))
+        val exactAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarm.canScheduleExactAlarms()
+        if (exactAllowed) {
+            alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, whenMillis, pendingIntent(context))
+        } else {
+            alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, whenMillis, pendingIntent(context))
+        }
     }
 
     fun cancel(context: Context) {
