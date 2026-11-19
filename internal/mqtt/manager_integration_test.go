@@ -180,6 +180,10 @@ func TestManagerReconnectsAfterBrokerOutage(t *testing.T) {
 	topic := base + "/" + device.ID + "/location"
 	manager.PublishLocation(device, reconnectLocation(51.5))
 	waitForPayload(t, &mu, messages, topic, `"latitude":51.5`, 5*time.Second)
+	// Let the QoS 1 publish receive its PUBACK before breaking the connection.
+	// Paho v1.5.1 has a known benign race when resuming an in-flight packet
+	// during reconnect, which the race detector can flag (paho issue #703).
+	time.Sleep(250 * time.Millisecond)
 
 	proxy.SetBlocked(true)
 	waitForConnectionState(t, manager, false, time.Time{}, 10*time.Second)
@@ -191,6 +195,7 @@ func TestManagerReconnectsAfterBrokerOutage(t *testing.T) {
 
 	manager.PublishLocation(device, reconnectLocation(48.2))
 	waitForPayload(t, &mu, messages, topic, `"latitude":48.2`, 5*time.Second)
+	time.Sleep(250 * time.Millisecond)
 	if manager.Status().LastError != "" {
 		t.Fatalf("unexpected MQTT error after reconnect: %s", manager.Status().LastError)
 	}
