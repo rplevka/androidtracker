@@ -1,0 +1,59 @@
+name: PR image
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: pr-image-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Build PR image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
+      - name: Compute image tags
+        id: vars
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: echo "short_sha=${HEAD_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
+          platforms: linux/amd64
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/androidtracker-api:pr-${{ github.event.pull_request.number }}-${{ steps.vars.outputs.short_sha }}
+            ghcr.io/${{ github.repository_owner }}/androidtracker-api:pr-${{ github.event.pull_request.number }}
+          build-args: |
+            VERSION=pr-${{ github.event.pull_request.number }}
+            COMMIT=${{ github.event.pull_request.head.sha }}
+            BUILD_TIME=${{ github.event.pull_request.updated_at }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=Kidstracker API and admin frontend
+            org.opencontainers.image.version=pr-${{ github.event.pull_request.number }}
+            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
