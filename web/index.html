@@ -238,8 +238,14 @@
     .history-fields { display: flex; align-items: end; gap: .75rem; flex-wrap: wrap; }
     #history-days { width: min(24rem, 80vw); }
     #map { height: 55vh; min-height: 320px; border-radius: var(--radius); margin: 0 0 1rem; border: 1px solid var(--border); background: #b9d7ea; }
+    .device-filters { display: flex; align-items: end; gap: .65rem; flex-wrap: wrap; margin: 0 0 .85rem; }
+    .device-filters label { font-size: .76rem; }
+    .device-filters .device-search { flex: 1 1 15rem; }
+    .device-filters input[type=search] { width: 100%; }
+    #device-count { margin-left: auto; font-size: .8rem; }
     #devices { display: grid; gap: .85rem; }
     .device { display: flex; flex-direction: column; gap: .7rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); padding: 1rem; }
+    .device-empty { margin: 0; padding: 1.1rem; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--muted); text-align: center; }
     .device-main { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
     .device-name { font-weight: 750; font-size: 1.02rem; }
     .device-status { color: var(--muted); font-size: .88rem; }
@@ -274,6 +280,7 @@
     .profile-list dd { margin: 0; font-weight: 650; }
     dialog { max-width: min(92vw, 28rem); border: 1px solid var(--border); border-radius: 14px; background: var(--panel); color: var(--text); padding: 1.2rem; box-shadow: var(--shadow); }
     dialog::backdrop { background: #0009; backdrop-filter: blur(2px); }
+    #create-device-form { display: grid; gap: .8rem; margin-top: 1rem; }
     #enrollment-qr { display: block; width: min(80vw, 360px); height: auto; margin: 1rem auto; image-rendering: pixelated; }
     #enrollment-code { display: block; overflow-wrap: anywhere; margin: .7rem 0; }
     #telemetry-dialog { max-width: min(96vw, 76rem); }
@@ -330,6 +337,7 @@
     <symbol id="i-admin" viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M10 17h4"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="12" cy="17" r="2"/></symbol>
     <symbol id="i-profile" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-4 3.2-6 7-6s6.2 2 7 6"/></symbol>
     <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M14 8l4 4-4 4M18 12H9"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M14 6l-6 6 6 6"/></symbol>
   </svg>
@@ -346,16 +354,16 @@
       <h1 id="login-title">Welcome back</h1>
       <p>Sign in to follow your trackers and inspect their status.</p>
       <div class="login-tabs" role="tablist" aria-label="Sign-in method">
-        <button class="login-tab active" type="button" data-login-mode="admin" role="tab" aria-selected="true">Admin key</button>
-        <button class="login-tab" type="button" data-login-mode="user" role="tab" aria-selected="false">Username &amp; password</button>
+        <button class="login-tab active" type="button" data-login-mode="user" role="tab" aria-selected="true">Username &amp; password</button>
+        <button class="login-tab" type="button" data-login-mode="admin" role="tab" aria-selected="false">Admin key</button>
       </div>
       <form id="login-form" novalidate>
-        <div id="login-admin-fields">
+        <div id="login-admin-fields" hidden>
           <label>Admin key
             <input id="login-admin-key" type="password" autocomplete="off" placeholder="ADMIN_TOKEN value" spellcheck="false">
           </label>
         </div>
-        <div id="login-user-fields" hidden>
+        <div id="login-user-fields">
           <label>Username
             <input id="login-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
           </label>
@@ -366,7 +374,7 @@
         <button class="btn-primary" type="submit">Sign in</button>
         <p id="login-error" role="alert"></p>
       </form>
-      <p class="login-hint">The admin key is the <code>ADMIN_TOKEN</code> configured for this server. Accounts are managed from the Administrate page.</p>
+      <p class="login-hint">Accounts are managed from the Administrate page. The admin key is the <code>ADMIN_TOKEN</code> configured for this server and remains available as a bootstrap login.</p>
     </div>
     <div class="login-footer">
       <span>Self-hosted GPS tracking</span>
@@ -389,6 +397,9 @@
       <nav class="sidebar-nav" aria-label="Sections">
         <button class="nav-item active" type="button" data-section="dashboard">
           <svg class="icon"><use href="#i-dashboard"></use></svg><span class="nav-label">Dashboard</span>
+        </button>
+        <button class="nav-item admin-only" type="button" id="add-device-button" title="Add device">
+          <svg class="icon"><use href="#i-plus"></use></svg><span class="nav-label">Add device</span>
         </button>
         <button class="nav-item admin-only" type="button" data-section="administrate">
           <svg class="icon"><use href="#i-admin"></use></svg><span class="nav-label">Administrate</span>
@@ -427,10 +438,6 @@
         <section id="section-dashboard" class="page">
           <div class="page-heading">
             <div><h2>Devices</h2><p class="muted">Live positions, battery state and tracker settings.</p></div>
-            <div class="toolbar admin-only" id="create-device-controls">
-              <input id="new-name" maxlength="120" placeholder="New device name" aria-label="New device name">
-              <button id="create" class="btn-primary" type="button">Create device</button>
-            </div>
           </div>
           <p id="message" class="muted" role="status" aria-live="polite"></p>
           <section id="history-controls" class="card" hidden>
@@ -445,6 +452,22 @@
             </div>
           </section>
           <div id="map" aria-label="Device location map"></div>
+          <div class="device-filters" aria-label="Filter devices">
+            <label class="device-search">Search devices
+              <input id="device-search" type="search" placeholder="Name or ID" autocomplete="off" spellcheck="false">
+            </label>
+            <label>Status
+              <select id="device-status-filter">
+                <option value="all">All devices</option>
+                <option value="tracking">Tracking</option>
+                <option value="paused">Paused</option>
+                <option value="pending">Awaiting activation</option>
+                <option value="revoked">Revoked</option>
+              </select>
+            </label>
+            <button id="clear-device-filters" class="btn-ghost" type="button">Reset</button>
+            <span id="device-count" class="muted" aria-live="polite"></span>
+          </div>
           <section id="devices" aria-label="Devices"></section>
         </section>
 
@@ -513,6 +536,21 @@
     </div>
   </div>
 
+  <dialog id="create-device-dialog" aria-labelledby="create-device-title">
+    <h2 id="create-device-title">Add device</h2>
+    <p class="muted">Create a tracker, then enroll the Android client with a one-time code.</p>
+    <form id="create-device-form">
+      <label>Device name
+        <input id="new-name" maxlength="120" required placeholder="e.g. Patrik's backpack">
+      </label>
+      <p id="create-device-error" class="danger" role="alert"></p>
+      <div class="form-actions">
+        <button class="btn-primary" type="submit">Create device</button>
+        <button id="close-create-device-dialog" type="button">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="telemetry-dialog" aria-labelledby="telemetry-title">
     <h2 id="telemetry-title">Device telemetry</h2>
     <p id="telemetry-summary" class="muted"></p>
@@ -548,6 +586,9 @@
     const deviceList = document.querySelector('#devices');
     const enrollmentDialog = document.querySelector('#enrollment-dialog');
     const telemetryDialog = document.querySelector('#telemetry-dialog');
+    const createDeviceDialog = document.querySelector('#create-device-dialog');
+    const createDeviceForm = document.querySelector('#create-device-form');
+    const createDeviceError = document.querySelector('#create-device-error');
     const historyControls = document.querySelector('#history-controls');
     const usersList = document.querySelector('#users-list');
     const userMessage = document.querySelector('#user-message');
@@ -556,7 +597,7 @@
     const sessionTokenKey = 'auth-token';
     let authToken = sessionStorage.getItem(sessionTokenKey) || sessionStorage.getItem(adminTokenKey) || '';
     let currentUser = null;
-    let loginMode = 'admin';
+    let loginMode = 'user';
     let activeSection = 'dashboard';
     let qrObjectUrl = null;
     let map = null;
@@ -576,6 +617,44 @@
     function setUserMessage(text, isError = false) {
       userMessage.textContent = text;
       userMessage.className = isError ? 'danger' : 'muted';
+    }
+
+    function applyDeviceFilter() {
+      const query = document.querySelector('#device-search').value.trim().toLowerCase();
+      const status = document.querySelector('#device-status-filter').value;
+      const rows = deviceList.querySelectorAll('.device');
+      let visible = 0;
+      rows.forEach(row => {
+        const matches = (!query || row.dataset.search.includes(query)) &&
+          (status === 'all' || row.dataset.status === status);
+        row.hidden = !matches;
+        if (matches) visible++;
+      });
+      document.querySelector('#device-count').textContent = rows.length
+        ? `${visible} of ${rows.length} device(s)`
+        : 'No devices yet';
+      let empty = deviceList.querySelector('.device-empty');
+      if (!visible) {
+        if (!empty) {
+          empty = document.createElement('p');
+          empty.className = 'device-empty';
+          deviceList.append(empty);
+        }
+        empty.textContent = rows.length
+          ? 'No devices match the current filters.'
+          : isAdmin() ? 'No devices yet. Use Add device in the sidebar.' : 'No devices available.';
+        empty.hidden = false;
+      } else if (empty) {
+        empty.hidden = true;
+      }
+    }
+
+    function openCreateDeviceDialog() {
+      createDeviceError.textContent = '';
+      document.querySelector('#new-name').value = '';
+      createDeviceDialog.showModal();
+      closeMobileSidebar();
+      requestAnimationFrame(() => document.querySelector('#new-name').focus());
     }
 
     async function api(path, options = {}, { skipAuth = false } = {}) {
@@ -621,6 +700,7 @@
       loginError.textContent = '';
       historyControls.hidden = true;
       historyDevice = null;
+      if (createDeviceDialog.open) createDeviceDialog.close();
       setLoginMode(loginMode);
     }
 
@@ -906,6 +986,8 @@
         for (const device of devices) {
           const row = document.createElement('article');
           row.className = 'device';
+          row.dataset.search = `${device.name} ${device.id}`.toLowerCase();
+          row.dataset.status = device.revoked ? 'revoked' : !device.activated ? 'pending' : device.config.enabled ? 'tracking' : 'paused';
 
           const main = document.createElement('div');
           main.className = 'device-main';
@@ -1092,7 +1174,8 @@
           }
         }
         if (markers.length) map.fitBounds(L.featureGroup(markers).getBounds().pad(.25));
-        setMessage(`${devices.length} device(s) loaded.`);
+        applyDeviceFilter();
+        setMessage('');
       } catch (error) {
         setMessage(error.message, true);
       }
@@ -1247,22 +1330,41 @@
     document.querySelector('#mobile-menu').addEventListener('click', openMobileSidebar);
     document.querySelector('#sidebar-scrim').addEventListener('click', closeMobileSidebar);
 
-    document.querySelector('#create').addEventListener('click', async () => {
+    document.querySelector('#add-device-button').addEventListener('click', openCreateDeviceDialog);
+    document.querySelector('#close-create-device-dialog').addEventListener('click', () => createDeviceDialog.close());
+    createDeviceForm.addEventListener('submit', async event => {
+      event.preventDefault();
       if (!isAdmin()) return;
       const name = document.querySelector('#new-name').value.trim();
-      if (!name) return setMessage('Enter a device name first.', true);
+      if (!name) {
+        createDeviceError.textContent = 'Enter a device name first.';
+        return;
+      }
+      createDeviceError.textContent = '';
+      const submit = createDeviceForm.querySelector('button[type=submit]');
+      submit.disabled = true;
       try {
         const result = await api('/api/admin/devices', { method: 'POST', body: JSON.stringify({ name }) });
+        document.querySelector('#new-name').value = '';
+        createDeviceDialog.close();
         try {
           await showEnrollmentQR(result);
         } catch (error) {
           window.prompt(`QR generation failed: ${error.message}\nCopy this one-time enrollment code:`, result.enrollment_code);
         }
-        document.querySelector('#new-name').value = '';
         await refresh();
       } catch (error) {
-        setMessage(error.message, true);
+        createDeviceError.textContent = error.message;
+      } finally {
+        submit.disabled = false;
       }
+    });
+    document.querySelector('#device-search').addEventListener('input', applyDeviceFilter);
+    document.querySelector('#device-status-filter').addEventListener('change', applyDeviceFilter);
+    document.querySelector('#clear-device-filters').addEventListener('click', () => {
+      document.querySelector('#device-search').value = '';
+      document.querySelector('#device-status-filter').value = 'all';
+      applyDeviceFilter();
     });
 
     document.querySelector('#copy-enrollment-code').addEventListener('click', async () => {
