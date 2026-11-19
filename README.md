@@ -74,7 +74,7 @@ The Compose file references this image and still allows `docker compose up --bui
 
 ### Portainer
 
-`portainer-stack.yml` is a standalone Portainer stack definition. It uses the published image, an external `traefik` network, and the existing `*.lan` default certificate. Set `POSTGRES_PASSWORD` and `ADMIN_TOKEN` as stack environment variables before deploying. The resulting UI is `https://tracker.lan`; HTTP is redirected to HTTPS. `tracker.lan` must resolve to the Portainer host, and the Traefik network must already exist.
+`portainer-stack.yml` is a standalone Portainer stack definition. It uses the published image, an external `traefik` network, and the existing `*.lan` default certificate. Set `POSTGRES_PASSWORD` and `ADMIN_TOKEN` as stack environment variables before deploying. Optionally set `KIDSTRACKER_API_IMAGE=ghcr.io/rplevka/androidtracker-api:pr-<number>-<short-sha>` to test-deploy a PR image; the default is `latest`. The resulting UI is `https://tracker.lan`; HTTP is redirected to HTTPS. `tracker.lan` must resolve to the Portainer host, and the Traefik network must already exist.
 
 To run only the database and API locally:
 
