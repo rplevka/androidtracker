@@ -122,6 +122,12 @@ GET   /api/admin/devices
 PATCH /api/admin/devices/{id}/config
 GET   /api/admin/devices/{id}/locations?from=<RFC3339>&to=<RFC3339>&limit=1000
 GET   /api/admin/devices/{id}/telemetry?limit=200
+GET   /api/admin/devices/{id}/zone-events?from=<RFC3339>&to=<RFC3339>&limit=1000
+GET   /api/admin/zones
+POST  /api/admin/zones
+GET   /api/admin/zones/{id}
+PATCH /api/admin/zones/{id}
+DELETE /api/admin/zones/{id}
 GET   /api/admin/mqtt
 PUT   /api/admin/mqtt
 POST  /api/admin/devices/{id}/revoke
@@ -193,6 +199,46 @@ automation:
 ```
 
 The backend publishes discovery and state to `<base_topic>/<device_id>/...`; configure the discovery prefix and base topic from the UI. Deleting or revoking a device removes its retained discovery configs.
+
+## Zones and geofencing
+
+Zones are named polygons stored in PostGIS and shared by any number of trackers. The **Zones** page in the web app provides a Leaflet map editor: draw a polygon by clicking the map, drag vertices to adjust it, choose a name/kind/color, and assign it to one or more devices. Polygons are normalized to `MultiPolygon` and validated by PostGIS. A simplified geometry is stored for device delivery.
+
+The backend evaluates every uploaded location, in `recorded_at` order, against the zones assigned to that device. It applies accuracy-aware hysteresis (a fix must be farther than `max(zone hysteresis, fix accuracy)` from the boundary) and an optional dwell time before emitting an enter/exit transition. State is stored in `device_zone_state`; transitions are stored in `zone_events`.
+
+Each assigned zone is published to Home Assistant through MQTT discovery:
+
+- `sensor.<device>_zone` — primary zone name, `outside`, or `unknown`.
+- `binary_sensor.<device>_in_<zone_id>` — presence in that specific zone.
+- Zone state is published retained on `<base_topic>/<device_id>/zone`; it includes `zone`, `zone_id`, `zone_ids`, `zones`, `state`, `event`, `event_at`, `recorded_at`, `accuracy_m`, and `location_source`.
+
+Zones can be read by any signed-in user; creating, editing, deleting and assigning them requires an administrator. Zone geometry can reveal home or school addresses, so protect dashboard and MQTT access accordingly.
+
+### Config and zone synchronisation
+
+The device config endpoint keeps returning the existing JSON body, so the current Android client remains compatible. New clients can use conditional requests:
+
+```text
+GET /v1/config
+If-None-Match: W/"cfg-12-9f3a2c"
+```
+
+The response includes `ETag`, `X-Zones-ETag`, and `304 Not Modified` when the config is unchanged. Zone geometry is a separate resource:
+
+```text
+GET /v1/zones
+If-None-Match: W/"zones-7-1b2c"
+```
+
+`/v1/zones` returns only the zones assigned to that device, with simplified geometry. The per-device ETag changes when an assigned zone is edited, added or removed. A device acknowledgement can carry the zones ETag it applied:
+
+```json
+{"version": 12, "zones_etag": "W/\"zones-7-1b2c\"", "telemetry": {}}
+```
+
+Older clients that omit `zones_etag`, send no `If-None-Match`, or never call `/v1/zones` continue to work unchanged. The UI shows “zones pending client sync” only when a device has reported an applied zones ETag that differs from the current one.
+
+The automatic interval rules discussed for a later phase are not part of this implementation; this phase publishes authoritative zone state and exposes the device-facing config/zone resources needed for on-device evaluation.
 
 ## Android 9 / battery notes
 

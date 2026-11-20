@@ -17,18 +17,23 @@ import (
 )
 
 type fakeRepository struct {
-	devices        []domain.Device
-	config         domain.Config
-	locations      []domain.Location
-	lastID         string
-	deletedID      string
-	battery        *int
-	charging       *bool
-	appliedVersion *int64
-	telemetry      []domain.Telemetry
-	mqttRecord     domain.MQTTRecord
-	users          map[string]domain.User
-	sessions       map[string]domain.Session
+	devices          []domain.Device
+	config           domain.Config
+	locations        []domain.Location
+	lastID           string
+	deletedID        string
+	battery          *int
+	charging         *bool
+	appliedVersion   *int64
+	appliedZonesETag *string
+	telemetry        []domain.Telemetry
+	mqttRecord       domain.MQTTRecord
+	users            map[string]domain.User
+	sessions         map[string]domain.Session
+	zones            []domain.Zone
+	zoneEvents       []domain.ZoneEvent
+	zoneState        *domain.ZoneState
+	deletedZoneID    string
 }
 
 func (f *fakeRepository) Ping(context.Context) error { return nil }
@@ -43,7 +48,8 @@ func (f *fakeRepository) DeviceByToken(_ context.Context, token string) (domain.
 	if token != digest("device-token") {
 		return domain.Device{}, store.ErrNotFound
 	}
-	return domain.Device{ID: "device-1"}, nil
+	zones := f.zones
+	return domain.Device{ID: "device-1", Zones: zones, ZonesETag: domain.ZonesETag(zones)}, nil
 }
 func (f *fakeRepository) RecordHeartbeat(_ context.Context, _ string, battery *int, charging *bool) error {
 	f.battery, f.charging = battery, charging
@@ -57,8 +63,70 @@ func (f *fakeRepository) RecordTelemetry(_ context.Context, _ string, telemetry 
 	f.telemetry = append(f.telemetry, telemetry)
 	return nil
 }
-func (f *fakeRepository) RecordLocations(_ context.Context, id string, locations []domain.Location) error {
+func (f *fakeRepository) RecordLocations(_ context.Context, id string, locations []domain.Location) (*domain.ZoneState, error) {
 	f.lastID, f.locations = id, locations
+	return f.zoneState, nil
+}
+func (f *fakeRepository) ListZones(context.Context) ([]domain.Zone, error) {
+	return f.zones, nil
+}
+func (f *fakeRepository) GetZone(_ context.Context, id string) (domain.Zone, error) {
+	for _, zone := range f.zones {
+		if zone.ID == id {
+			return zone, nil
+		}
+	}
+	return domain.Zone{}, store.ErrNotFound
+}
+func (f *fakeRepository) CreateZone(_ context.Context, id string, input domain.ZoneInput) (domain.Zone, error) {
+	zone := domain.Zone{ID: id, Name: input.Name, Kind: input.Kind, Color: input.Color,
+		Geometry: input.Geometry, DeviceIDs: input.DeviceIDs}
+	if input.HysteresisM != nil {
+		zone.HysteresisM = *input.HysteresisM
+	}
+	if input.DwellSeconds != nil {
+		zone.DwellSeconds = *input.DwellSeconds
+	}
+	f.zones = append(f.zones, zone)
+	return zone, nil
+}
+func (f *fakeRepository) UpdateZone(_ context.Context, id string, patch domain.ZonePatch) (domain.Zone, []string, error) {
+	for index, zone := range f.zones {
+		if zone.ID != id {
+			continue
+		}
+		if patch.Name != nil {
+			zone.Name = *patch.Name
+		}
+		if patch.Kind != nil {
+			zone.Kind = *patch.Kind
+		}
+		if patch.Color != nil {
+			zone.Color = *patch.Color
+		}
+		if patch.Geometry != nil {
+			zone.Geometry = patch.Geometry
+		}
+		if patch.DeviceIDs != nil {
+			zone.DeviceIDs = *patch.DeviceIDs
+		}
+		f.zones[index] = zone
+		return zone, zone.DeviceIDs, nil
+	}
+	return domain.Zone{}, nil, store.ErrNotFound
+}
+func (f *fakeRepository) DeleteZone(_ context.Context, id string) ([]string, error) {
+	f.deletedZoneID = id
+	return nil, nil
+}
+func (f *fakeRepository) ListDeviceZones(context.Context, string, bool) ([]domain.Zone, error) {
+	return f.zones, nil
+}
+func (f *fakeRepository) ZoneEventsHistory(context.Context, string, time.Time, time.Time, int) ([]domain.ZoneEvent, error) {
+	return f.zoneEvents, nil
+}
+func (f *fakeRepository) AcknowledgeZones(_ context.Context, _ string, etag string) error {
+	f.appliedZonesETag = &etag
 	return nil
 }
 func (f *fakeRepository) GetConfig(context.Context, string) (domain.Config, error) {
@@ -166,6 +234,8 @@ type fakeMQTT struct {
 	locations []domain.Location
 	telemetry []domain.Telemetry
 	configs   []string
+	zones     []domain.ZoneState
+	refreshed []string
 	removed   []string
 }
 
@@ -184,6 +254,10 @@ func (f *fakeMQTT) PublishTelemetry(_ domain.Device, telemetry domain.Telemetry)
 	f.telemetry = append(f.telemetry, telemetry)
 }
 func (f *fakeMQTT) PublishConfig(device domain.Device) { f.configs = append(f.configs, device.ID) }
+func (f *fakeMQTT) PublishZone(_ domain.Device, state domain.ZoneState) {
+	f.zones = append(f.zones, state)
+}
+func (f *fakeMQTT) RefreshDevice(device domain.Device) { f.refreshed = append(f.refreshed, device.ID) }
 func (f *fakeMQTT) RemoveDevice(id string)             { f.removed = append(f.removed, id) }
 
 func TestVersionEndpointIsPublic(t *testing.T) {
@@ -516,6 +590,142 @@ func TestAdminCanDeleteDevice(t *testing.T) {
 	server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || repo.deletedID != "device-1" {
 		t.Fatalf("status = %d, deleted device = %q, body = %s", recorder.Code, repo.deletedID, recorder.Body.String())
+	}
+}
+
+func TestConfigEndpointSupportsETagAndZonesETag(t *testing.T) {
+	geometry := json.RawMessage(`{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}`)
+	repo := &fakeRepository{
+		config: domain.DefaultConfig(),
+		zones:  []domain.Zone{{ID: "zone-1", Name: "School", Version: 3, Geometry: geometry}},
+	}
+	server := New(repo, "admin-secret")
+	request := httptest.NewRequest(http.MethodGet, "/v1/config", nil)
+	request.Header.Set("Authorization", "Bearer device-token")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	etag := recorder.Header().Get("ETag")
+	zonesETag := recorder.Header().Get("X-Zones-ETag")
+	if etag == "" || zonesETag != domain.ZonesETag(repo.zones) {
+		t.Fatalf("missing or wrong ETags: config=%q zones=%q", etag, zonesETag)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v1/config", nil)
+	request.Header.Set("Authorization", "Bearer device-token")
+	request.Header.Set("If-None-Match", etag)
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotModified || recorder.Body.Len() != 0 {
+		t.Fatalf("conditional config status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("X-Zones-ETag") != zonesETag {
+		t.Fatalf("304 did not include zones ETag: %#v", recorder.Header())
+	}
+}
+
+func TestDeviceZonesEndpointSupportsETag(t *testing.T) {
+	geometry := json.RawMessage(`{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}`)
+	repo := &fakeRepository{zones: []domain.Zone{{
+		ID: "zone-1", Name: "School", Kind: domain.ZoneKindSchool, Version: 2,
+		Geometry: geometry, Priority: 5,
+	}}}
+	server := New(repo, "admin-secret")
+	request := httptest.NewRequest(http.MethodGet, "/v1/zones", nil)
+	request.Header.Set("Authorization", "Bearer device-token")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"School"`) ||
+		!strings.Contains(recorder.Body.String(), `"geometry"`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	etag := recorder.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("zones response did not include ETag")
+	}
+	request = httptest.NewRequest(http.MethodGet, "/v1/zones", nil)
+	request.Header.Set("Authorization", "Bearer device-token")
+	request.Header.Set("If-None-Match", etag)
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotModified || recorder.Body.Len() != 0 {
+		t.Fatalf("conditional zones status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDeviceCanAcknowledgeZonesETag(t *testing.T) {
+	repo := &fakeRepository{config: domain.DefaultConfig()}
+	server := New(repo, "admin-secret")
+	request := httptest.NewRequest(http.MethodPost, "/v1/config/ack", strings.NewReader(`{"version":1,"zones_etag":"W/\"zones-abc\""}`))
+	request.Header.Set("Authorization", "Bearer device-token")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.appliedZonesETag == nil || *repo.appliedZonesETag != `W/"zones-abc"` {
+		t.Fatalf("status = %d, body = %s, applied zones = %v", recorder.Code, recorder.Body.String(), repo.appliedZonesETag)
+	}
+}
+
+func TestAdminCanCreateZoneAndRefreshDevices(t *testing.T) {
+	repo := &fakeRepository{devices: []domain.Device{{ID: "device-1", Name: "patrik"}}}
+	publisher := &fakeMQTT{}
+	server := New(repo, "admin-secret", publisher)
+	body := `{"name":"School","kind":"school","color":"#e67e22","hysteresis_m":25,"dwell_seconds":0,"geometry":{"type":"Polygon","coordinates":[[[14.42,50.08],[14.43,50.08],[14.43,50.09],[14.42,50.09],[14.42,50.08]]]},"device_ids":["device-1"]}`
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/zones", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || len(repo.zones) != 1 || repo.zones[0].Name != "School" {
+		t.Fatalf("status = %d, body = %s, zones = %#v", recorder.Code, recorder.Body.String(), repo.zones)
+	}
+	if len(publisher.refreshed) != 1 || publisher.refreshed[0] != "device-1" {
+		t.Fatalf("zone assignment did not refresh device discovery: %v", publisher.refreshed)
+	}
+}
+
+func TestAdminCanUpdateAndDeleteZone(t *testing.T) {
+	repo := &fakeRepository{
+		devices: []domain.Device{{ID: "device-1", Name: "patrik"}},
+		zones:   []domain.Zone{{ID: "zone-1", Name: "School", DeviceIDs: []string{"device-1"}}},
+	}
+	publisher := &fakeMQTT{}
+	server := New(repo, "admin-secret", publisher)
+
+	request := httptest.NewRequest(http.MethodPatch, "/api/admin/zones/zone-1", strings.NewReader(`{"name":"School renamed"}`))
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.zones[0].Name != "School renamed" || len(publisher.refreshed) != 1 {
+		t.Fatalf("update status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/admin/zones/zone-1", nil)
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.deletedZoneID != "zone-1" {
+		t.Fatalf("delete status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestLocationBatchPublishesZoneState(t *testing.T) {
+	repo := &fakeRepository{
+		config: domain.DefaultConfig(),
+		zoneState: &domain.ZoneState{
+			Zone: "School", ZoneID: "zone-1", ZoneIDs: []string{"zone-1"},
+			State: "inside", RecordedAt: time.Now().UTC(),
+		},
+	}
+	publisher := &fakeMQTT{}
+	server := New(repo, "admin-secret", publisher)
+	body := `{"locations":[{"id":"zone-location","latitude":51.5,"longitude":-0.12,"accuracy_meters":8,"recorded_at":"` + time.Now().UTC().Format(time.RFC3339) + `"}]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/locations/batch", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer device-token")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || len(publisher.zones) != 1 || publisher.zones[0].Zone != "School" {
+		t.Fatalf("status = %d, body = %s, zones = %#v", recorder.Code, recorder.Body.String(), publisher.zones)
 	}
 }
 

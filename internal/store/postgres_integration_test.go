@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -175,7 +176,7 @@ func TestPostgresPostGISRoundTrip(t *testing.T) {
 	point.NetworkType = &networkType
 	point.GPSFixDurationMS = &gpsFixDuration
 	point.LocationSource = &locationSource
-	if err := repository.RecordLocations(ctx, id, []domain.Location{point, point}); err != nil {
+	if _, err := repository.RecordLocations(ctx, id, []domain.Location{point, point}); err != nil {
 		t.Fatal(err)
 	}
 	history, err := repository.LocationHistory(ctx, id, point.RecordedAt.Add(-time.Minute), point.RecordedAt.Add(time.Minute), 10)
@@ -267,5 +268,138 @@ func TestPostgresPostGISRoundTrip(t *testing.T) {
 	}
 	if devicesRemaining != 0 || locationsRemaining != 0 {
 		t.Fatalf("device delete did not cascade: devices=%d locations=%d", devicesRemaining, locationsRemaining)
+	}
+}
+
+func TestPostgresZonesAndLocationEvaluation(t *testing.T) {
+	connectionString := os.Getenv("DATABASE_URL")
+	if connectionString == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	repository, err := Open(ctx, connectionString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	deviceID := fmt.Sprintf("zone-device-%d", time.Now().UnixNano())
+	config := domain.DefaultConfig()
+	codeSum := sha256.Sum256([]byte("zone-enrollment-" + deviceID))
+	tokenSum := sha256.Sum256([]byte("zone-token-" + deviceID))
+	codeHash, tokenHash := hex.EncodeToString(codeSum[:]), hex.EncodeToString(tokenSum[:])
+	if _, err := repository.CreateDevice(ctx, deviceID, "Zone test", codeHash, config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Enroll(ctx, codeHash, tokenHash); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = repository.DeleteDevice(context.Background(), deviceID) }()
+
+	zoneName := fmt.Sprintf("Zone test %d", time.Now().UnixNano())
+	geometry := json.RawMessage(`{"type":"Polygon","coordinates":[[[-0.13,51.49],[-0.11,51.49],[-0.11,51.51],[-0.13,51.51],[-0.13,51.49]]]}`)
+	hysteresis, dwell := 0.0, 0
+	zone, err := repository.CreateZone(ctx, "zone-"+deviceID, domain.ZoneInput{
+		Name: zoneName, Kind: domain.ZoneKindSchool, Color: "#e67e22",
+		HysteresisM: &hysteresis, DwellSeconds: &dwell, Geometry: geometry,
+		DeviceIDs: []string{deviceID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zone.Name != zoneName || len(zone.DeviceIDs) != 1 || zone.DeviceIDs[0] != deviceID {
+		t.Fatalf("unexpected created zone: %#v", zone)
+	}
+	deviceZones, err := repository.ListDeviceZones(ctx, deviceID, true)
+	if err != nil || len(deviceZones) != 1 || len(deviceZones[0].Geometry) == 0 {
+		t.Fatalf("device zones: %#v err=%v", deviceZones, err)
+	}
+	etagBefore := domain.ZonesETag(deviceZones)
+
+	inside := domain.Location{ID: "inside-" + deviceID, Latitude: 51.5, Longitude: -0.12,
+		AccuracyM: 5, RecordedAt: time.Now().UTC()}
+	insideState, err := repository.RecordLocations(ctx, deviceID, []domain.Location{inside})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if insideState == nil || insideState.State != "inside" || insideState.Zone != zoneName || len(insideState.ZoneIDs) != 1 {
+		t.Fatalf("inside state: %#v", insideState)
+	}
+
+	outside := domain.Location{ID: "outside-" + deviceID, Latitude: 51.6, Longitude: -0.12,
+		AccuracyM: 5, RecordedAt: time.Now().UTC().Add(time.Second)}
+	outsideState, err := repository.RecordLocations(ctx, deviceID, []domain.Location{outside})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outsideState == nil || outsideState.State != "outside" || outsideState.Event != "exit" {
+		t.Fatalf("outside state: %#v", outsideState)
+	}
+	events, err := repository.ZoneEventsHistory(ctx, deviceID, time.Now().Add(-time.Minute), time.Now().Add(time.Minute), 10)
+	if err != nil || len(events) != 1 || events[0].Event != "exit" || events[0].ZoneID != zone.ID {
+		t.Fatalf("zone events: %#v err=%v", events, err)
+	}
+
+	renamed := zoneName + " renamed"
+	updated, affected, err := repository.UpdateZone(ctx, zone.ID, domain.ZonePatch{Name: &renamed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != renamed || updated.Version <= zone.Version || len(affected) != 1 || affected[0] != deviceID {
+		t.Fatalf("updated zone: %#v affected=%v", updated, affected)
+	}
+	previousVersion := updated.Version
+	newGeometry := json.RawMessage(`{"type":"Polygon","coordinates":[[[-0.14,51.48],[-0.10,51.48],[-0.10,51.52],[-0.14,51.52],[-0.14,51.48]]]}`)
+	updated, affected, err = repository.UpdateZone(ctx, zone.ID, domain.ZonePatch{Geometry: newGeometry})
+	if err != nil || len(updated.Geometry) == 0 || updated.Version <= previousVersion || len(affected) != 1 {
+		t.Fatalf("updated zone geometry: %#v affected=%v err=%v", updated, affected, err)
+	}
+	deviceZones, err = repository.ListDeviceZones(ctx, deviceID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if domain.ZonesETag(deviceZones) == etagBefore {
+		t.Fatal("zones etag did not change after renaming a zone")
+	}
+	newETag := domain.ZonesETag(deviceZones)
+	if err := repository.AcknowledgeZones(ctx, deviceID, newETag); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := repository.ListDevices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, device := range devices {
+		if device.ID == deviceID {
+			found = true
+			if device.AppliedZonesETag == nil || *device.AppliedZonesETag != newETag {
+				t.Fatalf("applied zones etag: %#v", device.AppliedZonesETag)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("device missing after zone update")
+	}
+	allZones, err := repository.ListZones(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, item := range allZones {
+		if item.ID == zone.ID && item.Name == renamed && len(item.Geometry) > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("updated zone missing from list")
+	}
+	removedDevices, err := repository.DeleteZone(ctx, zone.ID)
+	if err != nil || len(removedDevices) != 1 || removedDevices[0] != deviceID {
+		t.Fatalf("delete zone: devices=%v err=%v", removedDevices, err)
 	}
 }
