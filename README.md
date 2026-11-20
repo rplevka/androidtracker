@@ -238,6 +238,8 @@ If-None-Match: W/"zones-7-1b2c"
 
 Older clients that omit `zones_etag`, send no `If-None-Match`, or never call `/v1/zones` continue to work unchanged. The UI shows “zones pending client sync” only when a device has reported an applied zones ETag that differs from the current one.
 
+Android client 0.8.0 and later cache the assigned simplified zones locally. On each location fix it evaluates point-in-polygon locally (including holes and multipolygons). On an enter/exit transition it uploads the fix immediately instead of waiting for the next sync interval, then returns to the normal schedule. Zone parsing/evaluation failures are swallowed so they can never stop location tracking. The backend remains authoritative for zone state and HA events.
+
 The automatic interval rules discussed for a later phase are not part of this implementation; this phase publishes authoritative zone state and exposes the device-facing config/zone resources needed for on-device evaluation.
 
 ## Android 9 / battery notes
