@@ -1,6 +1,13 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"hash/crc32"
+	"sort"
+	"strings"
+	"time"
+)
 
 const (
 	RoleAdmin = "admin"
@@ -92,6 +99,108 @@ func (p ConfigPatch) Apply(current Config) Config {
 	return current
 }
 
+const (
+	ZoneKindHome   = "home"
+	ZoneKindSchool = "school"
+	ZoneKindWork   = "work"
+	ZoneKindOther  = "other"
+)
+
+// Zone is a named polygon shared by any number of trackers.
+type Zone struct {
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Kind         string          `json:"kind"`
+	Color        string          `json:"color"`
+	HysteresisM  float64         `json:"hysteresis_m"`
+	DwellSeconds int             `json:"dwell_seconds"`
+	Version      int64           `json:"version"`
+	Geometry     json.RawMessage `json:"geometry,omitempty"`
+	AreaM2       float64         `json:"area_m2,omitempty"`
+	Priority     int             `json:"priority,omitempty"`
+	DeviceIDs    []string        `json:"device_ids,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+type ZoneInput struct {
+	Name         string          `json:"name"`
+	Kind         string          `json:"kind"`
+	Color        string          `json:"color"`
+	HysteresisM  *float64        `json:"hysteresis_m"`
+	DwellSeconds *int            `json:"dwell_seconds"`
+	Geometry     json.RawMessage `json:"geometry"`
+	DeviceIDs    []string        `json:"device_ids"`
+}
+
+type ZonePatch struct {
+	Name         *string         `json:"name"`
+	Kind         *string         `json:"kind"`
+	Color        *string         `json:"color"`
+	HysteresisM  *float64        `json:"hysteresis_m"`
+	DwellSeconds *int            `json:"dwell_seconds"`
+	Geometry     json.RawMessage `json:"geometry"`
+	DeviceIDs    *[]string       `json:"device_ids"`
+}
+
+type ZoneRef struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind,omitempty"`
+	Color    string `json:"color,omitempty"`
+	Priority int    `json:"priority,omitempty"`
+}
+
+type ZoneEvent struct {
+	ID         int64           `json:"id,omitempty"`
+	DeviceID   string          `json:"device_id,omitempty"`
+	ZoneID     string          `json:"zone_id"`
+	ZoneName   string          `json:"zone_name,omitempty"`
+	Event      string          `json:"event"`
+	OccurredAt time.Time       `json:"occurred_at"`
+	LocationID *int64          `json:"location_id,omitempty"`
+	AccuracyM  float64         `json:"accuracy_m,omitempty"`
+	Metadata   json.RawMessage `json:"metadata,omitempty"`
+	CreatedAt  time.Time       `json:"created_at,omitempty"`
+}
+
+type ZoneState struct {
+	Zone       string     `json:"zone"`
+	ZoneID     string     `json:"zone_id,omitempty"`
+	ZoneIDs    []string   `json:"zone_ids"`
+	Zones      []ZoneRef  `json:"zones"`
+	State      string     `json:"state"`
+	Event      string     `json:"event,omitempty"`
+	EventAt    *time.Time `json:"event_at,omitempty"`
+	RecordedAt time.Time  `json:"recorded_at"`
+	AccuracyM  float64    `json:"accuracy_m"`
+	Source     *string    `json:"location_source,omitempty"`
+}
+
+func ValidZoneKind(kind string) bool {
+	switch kind {
+	case ZoneKindHome, ZoneKindSchool, ZoneKindWork, ZoneKindOther:
+		return true
+	default:
+		return false
+	}
+}
+
+// ZonesETag fingerprints the assigned zone IDs and their versions so a client
+// only downloads geometry when something it uses has changed.
+func ZonesETag(zones []Zone) string {
+	if len(zones) == 0 {
+		return `W/"zones-empty"`
+	}
+	parts := make([]string, 0, len(zones))
+	for _, zone := range zones {
+		parts = append(parts, fmt.Sprintf("%s:%d", zone.ID, zone.Version))
+	}
+	sort.Strings(parts)
+	sum := crc32.Checksum([]byte(strings.Join(parts, "|")), crc32.MakeTable(crc32.Castagnoli))
+	return fmt.Sprintf(`W/"zones-%08x"`, sum)
+}
+
 type Location struct {
 	ID               string    `json:"id"`
 	Latitude         float64   `json:"latitude"`
@@ -134,18 +243,22 @@ type Telemetry struct {
 }
 
 type Device struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Activated       bool       `json:"activated"`
-	Revoked         bool       `json:"revoked"`
-	CreatedAt       time.Time  `json:"created_at"`
-	LastSeen        *time.Time `json:"last_seen,omitempty"`
-	BatteryPercent  *int       `json:"battery_percent,omitempty"`
-	Charging        *bool      `json:"charging,omitempty"`
-	Config          Config     `json:"config"`
-	AppliedConfig   *Config    `json:"applied_config,omitempty"`
-	AppliedAt       *time.Time `json:"applied_at,omitempty"`
-	CurrentLocation *Location  `json:"current_location,omitempty"`
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	Activated        bool       `json:"activated"`
+	Revoked          bool       `json:"revoked"`
+	CreatedAt        time.Time  `json:"created_at"`
+	LastSeen         *time.Time `json:"last_seen,omitempty"`
+	BatteryPercent   *int       `json:"battery_percent,omitempty"`
+	Charging         *bool      `json:"charging,omitempty"`
+	Config           Config     `json:"config"`
+	AppliedConfig    *Config    `json:"applied_config,omitempty"`
+	AppliedAt        *time.Time `json:"applied_at,omitempty"`
+	Zones            []Zone     `json:"zones,omitempty"`
+	ZonesETag        string     `json:"zones_etag,omitempty"`
+	AppliedZonesETag *string    `json:"applied_zones_etag,omitempty"`
+	AppliedZonesAt   *time.Time `json:"applied_zones_at,omitempty"`
+	CurrentLocation  *Location  `json:"current_location,omitempty"`
 }
 
 type MQTTSettings struct {

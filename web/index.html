@@ -238,6 +238,18 @@
     .history-fields { display: flex; align-items: end; gap: .75rem; flex-wrap: wrap; }
     #history-days { width: min(24rem, 80vw); }
     #map { height: 55vh; min-height: 320px; border-radius: var(--radius); margin: 0 0 1rem; border: 1px solid var(--border); background: #b9d7ea; }
+    #zones-map { height: 55vh; min-height: 320px; border-radius: var(--radius); margin: 0 0 1rem; border: 1px solid var(--border); background: #b9d7ea; }
+    .zones-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, .8fr); gap: 1rem; align-items: start; }
+    #zones-list { display: grid; gap: .55rem; }
+    .zone-row { display: flex; align-items: center; gap: .65rem; padding: .65rem .7rem; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-soft); }
+    .zone-swatch { width: 1rem; height: 1rem; flex: 0 0 auto; border: 1px solid rgba(0, 0, 0, .18); border-radius: 4px; }
+    .zone-row-main { display: grid; gap: .1rem; min-width: 0; flex: 1; }
+    .zone-row-main strong { font-size: .92rem; }
+    .zone-row-main small { color: var(--muted); font-size: .76rem; }
+    .zone-row-actions { display: flex; gap: .35rem; flex-wrap: wrap; }
+    .zone-device-list { display: flex; flex-wrap: wrap; gap: .35rem .9rem; margin-top: .45rem; }
+    .zone-device-list label { display: flex; align-items: center; gap: .35rem; color: var(--text); font-size: .82rem; }
+    .zone-empty { margin: 0; padding: 1rem; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); text-align: center; }
     .device-filters { display: flex; align-items: end; gap: .65rem; flex-wrap: wrap; margin: 0 0 .85rem; }
     .device-filters label { font-size: .76rem; }
     .device-filters .device-search { flex: 1 1 15rem; }
@@ -317,7 +329,8 @@
       #content { padding: 1rem 1rem 2.5rem; }
       #user-chip { max-width: 10rem; }
       #user-chip-name { display: none; }
-      #map { height: 45vh; min-height: 260px; }
+      #map, #zones-map { height: 45vh; min-height: 260px; }
+      .zones-layout { grid-template-columns: 1fr; }
       .device { padding: .85rem; }
     }
     @media (max-width: 560px) {
@@ -335,6 +348,7 @@
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
     <symbol id="i-admin" viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M10 17h4"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="12" cy="17" r="2"/></symbol>
+    <symbol id="i-zones" viewBox="0 0 24 24"><path d="M12 3l8 5-3 10-10 1-4-8z"/><circle cx="12" cy="3" r="1"/><circle cx="20" cy="8" r="1"/><circle cx="17" cy="18" r="1"/><circle cx="7" cy="19" r="1"/><circle cx="3" cy="11" r="1"/></symbol>
     <symbol id="i-profile" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-4 3.2-6 7-6s6.2 2 7 6"/></symbol>
     <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M14 8l4 4-4 4M18 12H9"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
@@ -397,6 +411,9 @@
       <nav class="sidebar-nav" aria-label="Sections">
         <button class="nav-item active" type="button" data-section="dashboard">
           <svg class="icon"><use href="#i-dashboard"></use></svg><span class="nav-label">Dashboard</span>
+        </button>
+        <button class="nav-item" type="button" data-section="zones">
+          <svg class="icon"><use href="#i-zones"></use></svg><span class="nav-label">Zones</span>
         </button>
         <button class="nav-item admin-only" type="button" id="add-device-button" title="Add device">
           <svg class="icon"><use href="#i-plus"></use></svg><span class="nav-label">Add device</span>
@@ -469,6 +486,46 @@
             <span id="device-count" class="muted" aria-live="polite"></span>
           </div>
           <section id="devices" aria-label="Devices"></section>
+        </section>
+
+        <section id="section-zones" class="page" hidden>
+          <div class="page-heading">
+            <div><h2>Zones</h2><p class="muted">Named polygons shared by any tracker. Click the map to draw.</p></div>
+            <div class="toolbar admin-only">
+              <button id="new-zone-button" class="btn-primary" type="button">New zone</button>
+            </div>
+          </div>
+          <p id="zone-message" class="muted" role="status" aria-live="polite"></p>
+          <div id="zones-map" aria-label="Zone editor map"></div>
+          <div class="zones-layout">
+            <section id="zones-list" class="card" aria-label="Zones"></section>
+            <section id="zone-editor" class="card" hidden aria-labelledby="zone-editor-title">
+              <h2 id="zone-editor-title">New zone</h2>
+              <form id="zone-form" class="form-grid">
+                <label>Name <input id="zone-name" required maxlength="120" placeholder="e.g. School"></label>
+                <label>Kind
+                  <select id="zone-kind">
+                    <option value="other">Other</option>
+                    <option value="home">Home</option>
+                    <option value="school">School</option>
+                    <option value="work">Work</option>
+                  </select>
+                </label>
+                <label>Color <input id="zone-color" type="color" value="#0d7b74"></label>
+                <label>Hysteresis (m) <input id="zone-hysteresis" type="number" min="0" max="1000" step="1" value="25"></label>
+                <label>Dwell (s) <input id="zone-dwell" type="number" min="0" max="86400" step="1" value="0"></label>
+                <div class="full muted" id="zone-draw-hint">Click the map to add at least three points. Drag a point to adjust it.</div>
+                <div class="full"><strong>Assign to trackers</strong><div id="zone-devices" class="zone-device-list"></div></div>
+                <p id="zone-form-error" class="danger full" role="alert"></p>
+                <div class="form-actions full">
+                  <button class="btn-primary" type="submit">Save zone</button>
+                  <button id="zone-undo" type="button">Undo point</button>
+                  <button id="zone-cancel" type="button">Cancel</button>
+                  <button id="zone-delete" type="button" class="btn-danger" hidden>Delete zone</button>
+                </div>
+              </form>
+            </section>
+          </div>
         </section>
 
         <section id="section-administrate" class="page" hidden>
@@ -593,6 +650,19 @@
     const usersList = document.querySelector('#users-list');
     const userMessage = document.querySelector('#user-message');
     const createUserForm = document.querySelector('#create-user-form');
+    const zoneMessage = document.querySelector('#zone-message');
+    const zonesListElement = document.querySelector('#zones-list');
+    const zoneEditor = document.querySelector('#zone-editor');
+    const zoneForm = document.querySelector('#zone-form');
+    const zoneFormError = document.querySelector('#zone-form-error');
+    const zoneNameInput = document.querySelector('#zone-name');
+    const zoneKindInput = document.querySelector('#zone-kind');
+    const zoneColorInput = document.querySelector('#zone-color');
+    const zoneHysteresisInput = document.querySelector('#zone-hysteresis');
+    const zoneDwellInput = document.querySelector('#zone-dwell');
+    const zoneDevicesElement = document.querySelector('#zone-devices');
+    const zoneDeleteButton = document.querySelector('#zone-delete');
+    const zoneEditorTitle = document.querySelector('#zone-editor-title');
     const adminTokenKey = 'admin-token';
     const sessionTokenKey = 'auth-token';
     let authToken = sessionStorage.getItem(sessionTokenKey) || sessionStorage.getItem(adminTokenKey) || '';
@@ -602,8 +672,18 @@
     let qrObjectUrl = null;
     let map = null;
     let markers = [];
+    let accuracyCircles = [];
     let historyLine = null;
     let historyDevice = null;
+    let zonesMap = null;
+    let zoneLayerGroup = null;
+    let zoneDraft = [];
+    let zoneDraftMarkers = [];
+    let zoneDraftLayer = null;
+    let zoneDrawing = false;
+    let editingZoneId = null;
+    let allZones = [];
+    let allDevices = [];
 
     function isAdmin() {
       return currentUser != null && currentUser.role === 'admin';
@@ -716,6 +796,9 @@
       if (!isAdmin() && activeSection === 'administrate') {
         navigate('dashboard');
       }
+      if (!isAdmin() && !zoneEditor.hidden) {
+        closeZoneEditor();
+      }
       if (!currentUser) return;
       const displayName = currentUser.display_name || currentUser.username || '';
       document.querySelector('#sidebar-name').textContent = displayName;
@@ -756,6 +839,271 @@
         }).addTo(map);
       }
       requestAnimationFrame(() => map.invalidateSize());
+    }
+
+    function ensureZonesMap() {
+      if (!window.L) return;
+      if (!zonesMap) {
+        zonesMap = L.map('zones-map').setView([20, 0], 2);
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(zonesMap);
+        zoneLayerGroup = L.layerGroup().addTo(zonesMap);
+        zonesMap.on('click', event => {
+          if (!zoneDrawing || !isAdmin()) return;
+          zoneDraft.push([event.latlng.lat, event.latlng.lng]);
+          renderZoneDraft();
+        });
+      }
+      requestAnimationFrame(() => zonesMap.invalidateSize());
+    }
+
+    function setZoneMessage(text, isError = false) {
+      zoneMessage.textContent = text;
+      zoneMessage.className = isError ? 'danger' : 'muted';
+    }
+
+    function zoneGeometryToPoints(geometry) {
+      if (!geometry) return [];
+      let ring = null;
+      if (geometry.type === 'Polygon') ring = geometry.coordinates?.[0];
+      else if (geometry.type === 'MultiPolygon') ring = geometry.coordinates?.[0]?.[0];
+      if (!Array.isArray(ring) || ring.length < 3) return [];
+      const points = ring.map(point => [Number(point[1]), Number(point[0])])
+        .filter(point => Number.isFinite(point[0]) && Number.isFinite(point[1]));
+      if (points.length > 1) {
+        const first = points[0];
+        const last = points[points.length - 1];
+        if (first[0] === last[0] && first[1] === last[1]) points.pop();
+      }
+      return points;
+    }
+
+    function zonePointsToGeometry(points) {
+      const ring = points.map(point => [point[1], point[0]]);
+      if (ring.length) ring.push([...ring[0]]);
+      return { type: 'Polygon', coordinates: [ring] };
+    }
+
+    function renderZoneDraft() {
+      if (!zonesMap) return;
+      zoneDraftMarkers.forEach(marker => zonesMap.removeLayer(marker));
+      zoneDraftMarkers = [];
+      if (zoneDraftLayer) {
+        zonesMap.removeLayer(zoneDraftLayer);
+        zoneDraftLayer = null;
+      }
+      if (!zoneDraft.length) return;
+      zoneDraft.forEach((point, index) => {
+        const marker = L.marker(point, { draggable: true }).addTo(zonesMap);
+        marker.on('dragend', () => {
+          const latlng = marker.getLatLng();
+          zoneDraft[index] = [latlng.lat, latlng.lng];
+          renderZoneDraft();
+        });
+        marker.on('click', event => {
+          if (event.originalEvent) L.DomEvent.stopPropagation(event.originalEvent);
+        });
+        zoneDraftMarkers.push(marker);
+      });
+      if (zoneDraft.length >= 3) {
+        zoneDraftLayer = L.polygon(zoneDraft, {
+          color: '#f39c12', weight: 2, dashArray: '6 4', fillOpacity: 0.08
+        }).addTo(zonesMap);
+      } else if (zoneDraft.length >= 2) {
+        zoneDraftLayer = L.polyline(zoneDraft, {
+          color: '#f39c12', weight: 2, dashArray: '6 4'
+        }).addTo(zonesMap);
+      }
+    }
+
+    function renderZoneDevices(selectedIDs) {
+      zoneDevicesElement.replaceChildren();
+      const selected = new Set(selectedIDs || []);
+      const devices = allDevices.filter(device => !device.revoked);
+      if (!devices.length) {
+        const empty = document.createElement('span');
+        empty.className = 'muted';
+        empty.textContent = 'No trackers available.';
+        zoneDevicesElement.append(empty);
+        return;
+      }
+      for (const device of devices) {
+        const label = document.createElement('label');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = device.id;
+        input.checked = selected.has(device.id);
+        label.append(input, document.createTextNode(device.name));
+        zoneDevicesElement.append(label);
+      }
+    }
+
+    function openZoneEditor(zone = null) {
+      if (!isAdmin()) return;
+      ensureZonesMap();
+      editingZoneId = zone ? zone.id : null;
+      zoneDrawing = true;
+      zoneDraft = zone ? zoneGeometryToPoints(zone.geometry) : [];
+      zoneEditorTitle.textContent = zone ? `Edit zone — ${zone.name}` : 'New zone';
+      zoneNameInput.value = zone?.name || '';
+      zoneKindInput.value = zone?.kind || 'other';
+      zoneColorInput.value = zone?.color || '#0d7b74';
+      zoneHysteresisInput.value = zone?.hysteresis_m ?? 25;
+      zoneDwellInput.value = zone?.dwell_seconds ?? 0;
+      zoneDeleteButton.hidden = !zone;
+      zoneFormError.textContent = '';
+      zoneEditor.hidden = false;
+      renderZoneDevices(zone?.device_ids || []);
+      renderZoneDraft();
+      if (zoneDraft.length) zonesMap.fitBounds(zoneDraft, { padding: [30, 30] });
+      zoneNameInput.focus();
+    }
+
+    function closeZoneEditor() {
+      zoneEditor.hidden = true;
+      zoneDrawing = false;
+      editingZoneId = null;
+      zoneDraft = [];
+      zoneFormError.textContent = '';
+      renderZoneDraft();
+    }
+
+    async function saveZone(event) {
+      event.preventDefault();
+      if (!isAdmin()) return;
+      const name = zoneNameInput.value.trim();
+      if (!name) {
+        zoneFormError.textContent = 'Enter a zone name.';
+        return;
+      }
+      if (zoneDraft.length < 3) {
+        zoneFormError.textContent = 'Click at least three points on the map.';
+        return;
+      }
+      const deviceIDs = Array.from(zoneDevicesElement.querySelectorAll('input:checked')).map(input => input.value);
+      const payload = {
+        name,
+        kind: zoneKindInput.value,
+        color: zoneColorInput.value,
+        hysteresis_m: Number(zoneHysteresisInput.value),
+        dwell_seconds: Number(zoneDwellInput.value),
+        geometry: zonePointsToGeometry(zoneDraft),
+        device_ids: deviceIDs
+      };
+      try {
+        const path = editingZoneId ? `/api/admin/zones/${encodeURIComponent(editingZoneId)}` : '/api/admin/zones';
+        const result = await api(path, { method: editingZoneId ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
+        setZoneMessage(`Zone ${result.zone.name} saved.`);
+        closeZoneEditor();
+        await loadZones();
+      } catch (error) {
+        zoneFormError.textContent = error.message;
+      }
+    }
+
+    async function deleteZoneById(zone) {
+      if (!isAdmin() || !zone) return;
+      if (!window.confirm(`Delete zone ${zone.name}? Tracker assignments and zone history for it will be removed.`)) return;
+      try {
+        await api(`/api/admin/zones/${encodeURIComponent(zone.id)}`, { method: 'DELETE' });
+        if (editingZoneId === zone.id) closeZoneEditor();
+        setZoneMessage(`Zone ${zone.name} deleted.`);
+        await loadZones();
+      } catch (error) {
+        setZoneMessage(error.message, true);
+      }
+    }
+
+    function renderZones() {
+      zonesListElement.replaceChildren();
+      if (zoneLayerGroup) zoneLayerGroup.clearLayers();
+      if (!allZones.length) {
+        const empty = document.createElement('p');
+        empty.className = 'zone-empty';
+        empty.textContent = 'No zones yet. Create one and draw its polygon on the map.';
+        zonesListElement.append(empty);
+        return;
+      }
+      const deviceNames = new Map(allDevices.map(device => [device.id, device.name]));
+      const fit = L.latLngBounds([]);
+      for (const zone of allZones) {
+        const layer = L.geoJSON(zone.geometry, {
+          style: {
+            color: zone.color || '#0d7b74',
+            weight: 2,
+            fillColor: zone.color || '#0d7b74',
+            fillOpacity: 0.12
+          }
+        });
+        const popup = document.createElement('div');
+        const popupName = document.createElement('strong');
+        popupName.textContent = zone.name;
+        const popupKind = document.createElement('div');
+        popupKind.textContent = zone.kind || 'other';
+        popup.append(popupName, popupKind);
+        layer.bindPopup(popup);
+        if (isAdmin()) {
+          layer.on('click', event => {
+            if (zoneDrawing) return;
+            if (event.originalEvent) L.DomEvent.stopPropagation(event.originalEvent);
+            openZoneEditor(zone);
+          });
+        }
+        layer.addTo(zoneLayerGroup);
+        fit.extend(layer.getBounds());
+
+        const row = document.createElement('div');
+        row.className = 'zone-row';
+        const swatch = document.createElement('span');
+        swatch.className = 'zone-swatch';
+        swatch.style.background = zone.color || '#0d7b74';
+        const main = document.createElement('div');
+        main.className = 'zone-row-main';
+        const title = document.createElement('strong');
+        title.textContent = zone.name;
+        const meta = document.createElement('small');
+        const assigned = (zone.device_ids || []).map(id => deviceNames.get(id) || id);
+        meta.textContent = `${zone.kind || 'other'} · ${assigned.length ? assigned.join(', ') : 'not assigned'}`;
+        main.append(title, meta);
+        row.append(swatch, main);
+        if (isAdmin()) {
+          const actions = document.createElement('div');
+          actions.className = 'zone-row-actions';
+          const edit = document.createElement('button');
+          edit.type = 'button';
+          edit.textContent = 'Edit';
+          edit.addEventListener('click', () => openZoneEditor(zone));
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'btn-danger';
+          remove.textContent = 'Delete';
+          remove.addEventListener('click', () => deleteZoneById(zone));
+          actions.append(edit, remove);
+          row.append(actions);
+        }
+        zonesListElement.append(row);
+      }
+      if (zonesMap && !zoneDrawing && fit.isValid()) {
+        zonesMap.fitBounds(fit.pad(0.1));
+      }
+    }
+
+    async function loadZones() {
+      ensureZonesMap();
+      try {
+        const [zoneResult, deviceResult] = await Promise.all([
+          api('/api/admin/zones'),
+          api('/api/admin/devices')
+        ]);
+        allZones = zoneResult.zones || [];
+        allDevices = deviceResult.devices || [];
+        renderZones();
+        setZoneMessage('');
+      } catch (error) {
+        setZoneMessage(error.message, true);
+      }
     }
 
     function batteryAdjustedInterval(seconds, battery, charging) {
@@ -982,6 +1330,8 @@
         deviceList.replaceChildren();
         markers.forEach(marker => map.removeLayer(marker));
         markers = [];
+        accuracyCircles.forEach(circle => map.removeLayer(circle));
+        accuracyCircles = [];
         const admin = isAdmin();
         for (const device of devices) {
           const row = document.createElement('article');
@@ -1015,6 +1365,17 @@
             status.textContent = 'Awaiting activation';
           }
           main.append(name, status);
+          if (device.zones && device.zones.length) {
+            const zoneLine = document.createElement('span');
+            zoneLine.className = 'device-status';
+            const zoneNames = device.zones.map(zone => zone.name).join(', ');
+            const zonesApplied = device.applied_zones_etag && device.zones_etag &&
+              device.applied_zones_etag === device.zones_etag;
+            zoneLine.textContent = `Zones: ${zoneNames}${device.applied_zones_etag
+              ? zonesApplied ? ' · applied' : ' · pending client sync'
+              : ''}`;
+            main.append(zoneLine);
+          }
 
           const appliedVersion = device.applied_config?.version ?? 0;
           const desiredVersion = device.config.version;
@@ -1171,6 +1532,18 @@
             const point = device.current_location;
             const marker = L.marker([point.latitude, point.longitude]).addTo(map).bindPopup(mapPopup(device));
             markers.push(marker);
+            const accuracy = Number(point.accuracy_meters);
+            if (Number.isFinite(accuracy) && accuracy > 0) {
+              const circle = L.circle([point.latitude, point.longitude], {
+                radius: accuracy,
+                color: '#0d7b74',
+                weight: 1,
+                fillColor: '#0d7b74',
+                fillOpacity: 0.12,
+                interactive: false
+              }).addTo(map);
+              accuracyCircles.push(circle);
+            }
           }
         }
         if (markers.length) map.fitBounds(L.featureGroup(markers).getBounds().pad(.25));
@@ -1224,6 +1597,7 @@
     function navigate(section) {
       const sections = {
         dashboard: { title: 'Dashboard', eyebrow: 'Overview' },
+        zones: { title: 'Zones', eyebrow: 'Geofences' },
         administrate: { title: 'Administrate', eyebrow: 'Server and access' },
         profile: { title: 'Profile', eyebrow: 'Your account' }
       };
@@ -1245,6 +1619,8 @@
       if (section === 'dashboard') {
         ensureMap();
         refresh();
+      } else if (section === 'zones') {
+        loadZones();
       } else if (section === 'administrate') {
         loadMQTTSettings();
         loadUsers();
@@ -1279,7 +1655,7 @@
         currentUser = user;
         showApp();
         const initial = location.hash.slice(1);
-        navigate(['dashboard', 'administrate', 'profile'].includes(initial) ? initial : 'dashboard');
+        navigate(['dashboard', 'zones', 'administrate', 'profile'].includes(initial) ? initial : 'dashboard');
       } catch (_) {
         clearSession();
         showLogin();
@@ -1365,6 +1741,19 @@
       document.querySelector('#device-search').value = '';
       document.querySelector('#device-status-filter').value = 'all';
       applyDeviceFilter();
+    });
+
+    document.querySelector('#new-zone-button').addEventListener('click', () => openZoneEditor());
+    zoneForm.addEventListener('submit', saveZone);
+    document.querySelector('#zone-undo').addEventListener('click', () => {
+      if (!zoneDrawing || !zoneDraft.length) return;
+      zoneDraft.pop();
+      renderZoneDraft();
+    });
+    document.querySelector('#zone-cancel').addEventListener('click', closeZoneEditor);
+    zoneDeleteButton.addEventListener('click', () => {
+      const zone = allZones.find(item => item.id === editingZoneId);
+      deleteZoneById(zone);
     });
 
     document.querySelector('#copy-enrollment-code').addEventListener('click', async () => {

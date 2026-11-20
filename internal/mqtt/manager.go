@@ -46,6 +46,7 @@ type Manager struct {
 	locations       map[string]domain.Location
 	telemetry       map[string]domain.Telemetry
 	configs         map[string]domain.Config
+	zones           map[string]domain.ZoneState
 	discovered      map[string]bool
 	commandTopics   map[string]string
 	controller      ConfigController
@@ -61,6 +62,7 @@ func NewManager(ctx context.Context, logger *slog.Logger) *Manager {
 		locations:     make(map[string]domain.Location),
 		telemetry:     make(map[string]domain.Telemetry),
 		configs:       make(map[string]domain.Config),
+		zones:         make(map[string]domain.ZoneState),
 		discovered:    make(map[string]bool),
 		commandTopics: make(map[string]string),
 		out:           make(chan job, 256),
@@ -308,6 +310,39 @@ func (m *Manager) PublishConfig(device domain.Device) {
 	m.enqueue(device.ID)
 }
 
+func (m *Manager) PublishZone(device domain.Device, state domain.ZoneState) {
+	m.mu.Lock()
+	m.devices[device.ID] = device
+	m.zones[device.ID] = state
+	m.mu.Unlock()
+	m.ensureCommandSubscription(device.ID)
+	m.enqueue(device.ID)
+}
+
+// RefreshDevice republishes discovery after zone assignments or names change
+// and clears discovery topics that are no longer part of the device.
+func (m *Manager) RefreshDevice(device domain.Device) {
+	m.mu.Lock()
+	oldDevice, existed := m.devices[device.ID]
+	settings := m.settings
+	client := m.client
+	connected := m.connected
+	m.devices[device.ID] = device
+	m.discovered[device.ID] = false
+	m.mu.Unlock()
+	if existed && connected && client != nil && settings.Enabled && settings.DiscoveryEnabled {
+		oldMessages := discoveryMessages(settings, oldDevice)
+		newMessages := discoveryMessages(settings, device)
+		for topic := range oldMessages {
+			if _, stillPresent := newMessages[topic]; !stillPresent {
+				m.publishClient(client, topic, nil, true)
+			}
+		}
+	}
+	m.ensureCommandSubscription(device.ID)
+	m.enqueue(device.ID)
+}
+
 func (m *Manager) RemoveDevice(deviceID string) {
 	m.mu.Lock()
 	device, exists := m.devices[deviceID]
@@ -326,6 +361,7 @@ func (m *Manager) RemoveDevice(deviceID string) {
 	delete(m.locations, deviceID)
 	delete(m.telemetry, deviceID)
 	delete(m.configs, deviceID)
+	delete(m.zones, deviceID)
 	delete(m.discovered, deviceID)
 	delete(m.commandTopics, TopicsFor(settings, deviceID).ConfigSet)
 	m.mu.Unlock()
@@ -470,6 +506,7 @@ func (m *Manager) publishDevice(deviceID string) {
 	location, hasLocation := m.locations[deviceID]
 	telemetry, hasTelemetry := m.telemetry[deviceID]
 	config, hasConfig := m.configs[deviceID]
+	zone, hasZone := m.zones[deviceID]
 	settings := m.settings
 	client := m.client
 	connected := m.connected
@@ -505,6 +542,11 @@ func (m *Manager) publishDevice(deviceID string) {
 	if hasConfig {
 		if payload, err := json.Marshal(configState(config)); err == nil {
 			m.publishClient(client, topics.Config, payload, true)
+		}
+	}
+	if hasZone {
+		if payload, err := json.Marshal(zone); err == nil {
+			m.publishClient(client, topics.Zone, payload, true)
 		}
 	}
 }

@@ -76,6 +76,38 @@ func TestDiscoveryCanBeDisabledIndependentlyFromState(t *testing.T) {
 	}
 }
 
+func TestDiscoveryPublishesZoneStateAndPerZonePresence(t *testing.T) {
+	settings := domain.DefaultMQTTSettings()
+	settings.BaseTopic = "kidstracker"
+	device := testDevice()
+	device.Zones = []domain.Zone{{ID: "zone123", Name: "School", Kind: domain.ZoneKindSchool}}
+	messages := discoveryMessages(settings, device)
+	topics := TopicsFor(settings, device.ID)
+	var zoneSensor, zonePresence map[string]any
+	for topic, payload := range messages {
+		if strings.HasSuffix(topic, "_zone/config") {
+			if err := json.Unmarshal([]byte(payload), &zoneSensor); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if strings.HasSuffix(topic, "_zone_zone123/config") {
+			if err := json.Unmarshal([]byte(payload), &zonePresence); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if zoneSensor == nil || zonePresence == nil {
+		t.Fatalf("zone discovery entities missing: %#v", messages)
+	}
+	if zoneSensor["state_topic"] != topics.Zone || zoneSensor["value_template"] != "{{ value_json.zone }}" {
+		t.Fatalf("unexpected zone sensor: %#v", zoneSensor)
+	}
+	if zonePresence["state_topic"] != topics.Zone || zonePresence["device_class"] != "presence" ||
+		!strings.Contains(zonePresence["value_template"].(string), "zone123") {
+		t.Fatalf("unexpected zone presence sensor: %#v", zonePresence)
+	}
+}
+
 func TestLocationAndTelemetryPayloadsContainMetrics(t *testing.T) {
 	accuracy := 8.5
 	battery := 74

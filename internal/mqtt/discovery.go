@@ -65,6 +65,7 @@ type Topics struct {
 	Telemetry     string
 	Config        string
 	ConfigSet     string
+	Zone          string
 	Availability  string
 	DiscoveryPath string
 }
@@ -79,6 +80,7 @@ func TopicsFor(settings domain.MQTTSettings, deviceID string) Topics {
 		Telemetry:     base + "/telemetry",
 		Config:        base + "/config",
 		ConfigSet:     base + "/config/set",
+		Zone:          base + "/zone",
 		Availability:  normalizeBaseTopic(settings.BaseTopic) + "/status",
 		DiscoveryPath: prefix,
 	}
@@ -175,6 +177,26 @@ func discoveryMessages(settings domain.MQTTSettings, device domain.Device) map[s
 		"json_attributes_topic": topics.Location,
 		"source_type":           "gps",
 	})
+
+	if len(device.Zones) > 0 {
+		add("sensor", "zone", topics.Zone, map[string]any{
+			"name":                  "Zone",
+			"state_topic":           topics.Zone,
+			"value_template":        "{{ value_json.zone }}",
+			"json_attributes_topic": topics.Zone,
+			"icon":                  "mdi:map-marker-radius",
+		})
+		for _, zone := range device.Zones {
+			objectID := "zone_" + normalizeTopicPart(zone.ID, "zone")
+			add("binary_sensor", objectID, topics.Zone, map[string]any{
+				"name":           "In " + zone.Name,
+				"state_topic":    topics.Zone,
+				"value_template": fmt.Sprintf("{{ 'ON' if '%s' in value_json.zone_ids else 'OFF' }}", zone.ID),
+				"device_class":   "presence",
+				"icon":           "mdi:map-marker-check",
+			})
+		}
+	}
 
 	entity("sensor", "battery", "Battery", "{{ value_json.battery_percent }}", map[string]any{
 		"unit_of_measurement": "%", "device_class": "battery", "state_class": "measurement",

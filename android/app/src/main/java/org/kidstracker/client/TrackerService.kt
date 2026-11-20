@@ -30,6 +30,8 @@ import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 
+private data class ConfigFetchResult(val config: TrackerConfig, val zonesEtag: String?)
+
 class TrackerService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -38,6 +40,7 @@ class TrackerService : Service() {
     private val locationListeners = CopyOnWriteArrayList<LocationListener>()
     private var wakeLock: PowerManager.WakeLock? = null
     @Volatile private var cycleFinished = false
+    @Volatile private var zoneTransitionDetected = false
     private var scheduledWakeAt = 0L
     private var cycleStartedAt = 0L
 
@@ -64,6 +67,7 @@ class TrackerService : Service() {
     }
 
     private fun beginCycle() {
+        zoneTransitionDetected = false
         val base = preferences.getString(PREF_SERVER, null)
         val token = preferences.getString(PREF_TOKEN, null)
         if (base.isNullOrBlank() || token.isNullOrBlank()) return stopPermanently()
@@ -87,13 +91,16 @@ class TrackerService : Service() {
         if (syncDue) {
             preferences.edit().putString(PREF_SYNC_STATUS, "Syncing").remove(PREF_SYNC_ERROR).apply()
             try {
-                config = fetchConfig(base, token)
+                val fetched = fetchConfig(base, token)
+                config = fetched.config
                 saveConfig(config)
                 configFetched = true
+                val zonesEtag = refreshZones(base, token, fetched.zonesEtag)
                 configAcknowledged = acknowledgeConfig(
                     base,
                     token,
                     config.version,
+                    zonesEtag,
                     DeviceTelemetry.syncJson(
                         this,
                         config.version,
@@ -276,7 +283,8 @@ class TrackerService : Service() {
         val lowBattery = !charging && battery in 0..5
         var uploadError: Exception? = null
         var uploadSucceeded = queueSize() == 0
-        if (syncDue && !lowBattery) {
+        val shouldUpload = syncDue || zoneTransitionDetected
+        if (shouldUpload && !lowBattery) {
             try {
                 uploadQueued(base, token)
                 uploadSucceeded = true
@@ -290,6 +298,12 @@ class TrackerService : Service() {
         if (syncDue) {
             finishSync(configFetched, configAcknowledged, configError, uploadError,
                 uploadSucceeded, lowBattery && queueSize() > 0)
+        } else if (zoneTransitionDetected) {
+            when {
+                uploadError != null -> markSyncFailure(uploadError)
+                uploadSucceeded -> markSyncDeferred("Zone change uploaded immediately")
+                else -> markSyncDeferred("Zone change queued; waiting for the next sync")
+            }
         } else if (queueSize() > 0) {
             preferences.edit().putString(PREF_SYNC_STATUS, "Location queued for next sync").apply()
         }
@@ -343,11 +357,13 @@ class TrackerService : Service() {
     }
 
     private fun appendLocation(location: Location, config: TrackerConfig, fixDurationMS: Long) {
+        val zoneChanged = ZoneStore.evaluate(this, location)
+        if (zoneChanged) zoneTransitionDetected = true
         val previousLat = preferences.getFloat(PREF_LAST_LAT, Float.NaN)
         val previousLon = preferences.getFloat(PREF_LAST_LON, Float.NaN)
         if (!previousLat.isNaN() && !previousLon.isNaN()) {
             val previous = Location("last").apply { latitude = previousLat.toDouble(); longitude = previousLon.toDouble() }
-            if (!CyclePolicy.shouldRecord(location.distanceTo(previous), config.minDistanceMeters)) return
+            if (!CyclePolicy.shouldRecord(location.distanceTo(previous), config.minDistanceMeters) && !zoneChanged) return
         }
         val source = LocationSource.fromProvider(location.provider)
         val item = JSONObject()
@@ -396,7 +412,7 @@ class TrackerService : Service() {
         preferences.edit().putString(PREF_QUEUE, "[]").apply()
     }
 
-    private fun fetchConfig(base: String, token: String): TrackerConfig {
+    private fun fetchConfig(base: String, token: String): ConfigFetchResult {
         val connection = request("$base/v1/config", token, "GET")
         val currentBattery = batteryPercent()
         if (currentBattery in 0..100) connection.setRequestProperty("X-Battery-Percent", currentBattery.toString())
@@ -406,7 +422,40 @@ class TrackerService : Service() {
             val body = readResponse(connection, status)
             if (status == 401 || status == 403) throw DeviceAuthorizationException()
             if (status !in 200..299) throw IllegalStateException("Config request failed: $status")
-            return parseConfig(JSONObject(body))
+            return ConfigFetchResult(
+                parseConfig(JSONObject(body)),
+                connection.getHeaderField("X-Zones-ETag"),
+            )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun refreshZones(base: String, token: String, serverEtag: String?): String? {
+        val cachedEtag = ZoneStore.cachedEtag(this)
+        if (serverEtag.isNullOrBlank()) return cachedEtag
+        if (serverEtag == cachedEtag) return cachedEtag
+        val connection = request("$base/v1/zones", token, "GET")
+        if (!cachedEtag.isNullOrBlank()) connection.setRequestProperty("If-None-Match", cachedEtag)
+        try {
+            val status = connection.responseCode
+            val body = readResponse(connection, status)
+            if (status == 401 || status == 403) throw DeviceAuthorizationException()
+            if (status == HttpURLConnection.HTTP_NOT_MODIFIED) {
+                ZoneStore.updateEtag(this, serverEtag)
+                return serverEtag
+            }
+            if (status !in 200..299) return cachedEtag
+            val json = JSONObject(body)
+            val etag = json.optString("etag", serverEtag)
+            val zones = json.optJSONArray("zones") ?: JSONArray()
+            ZoneStore.save(this, etag, zones)
+            return etag
+        } catch (error: DeviceAuthorizationException) {
+            throw error
+        } catch (_: Exception) {
+            // Zone geometry is optional; never fail the sync because it could not be refreshed.
+            return cachedEtag
         } finally {
             connection.disconnect()
         }
@@ -416,6 +465,7 @@ class TrackerService : Service() {
         base: String,
         token: String,
         version: Long,
+        zonesEtag: String?,
         telemetry: JSONObject? = null,
     ): Boolean {
         val connection = request("$base/v1/config/ack", token, "POST")
@@ -423,6 +473,7 @@ class TrackerService : Service() {
         connection.setRequestProperty("Content-Type", "application/json")
         try {
             val payload = JSONObject().put("version", version)
+            if (!zonesEtag.isNullOrBlank()) payload.put("zones_etag", zonesEtag)
             telemetry?.let { payload.put("telemetry", it) }
             connection.outputStream.use {
                 it.write(payload.toString().toByteArray(Charsets.UTF_8))
@@ -496,6 +547,7 @@ class TrackerService : Service() {
     }
 
     private fun syncNow() {
+        zoneTransitionDetected = false
         val base = preferences.getString(PREF_SERVER, null)
         val token = preferences.getString(PREF_TOKEN, null)
         if (base.isNullOrBlank() || token.isNullOrBlank()) return stopPermanently()
@@ -509,13 +561,16 @@ class TrackerService : Service() {
         var configAcknowledged = false
         var configError: Exception? = null
         try {
-            val config = fetchConfig(base, token)
+            val fetched = fetchConfig(base, token)
+            val config = fetched.config
             updatedConfig = config
             saveConfig(config)
+            val zonesEtag = refreshZones(base, token, fetched.zonesEtag)
             configAcknowledged = acknowledgeConfig(
                 base,
                 token,
                 config.version,
+                zonesEtag,
                 DeviceTelemetry.syncJson(
                     this,
                     config.version,
