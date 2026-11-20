@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"strconv"
@@ -30,6 +31,8 @@ type MQTTPublisher interface {
 	PublishLocation(domain.Device, domain.Location)
 	PublishTelemetry(domain.Device, domain.Telemetry)
 	PublishConfig(domain.Device)
+	PublishZone(domain.Device, domain.ZoneState)
+	RefreshDevice(domain.Device)
 	RemoveDevice(string)
 }
 
@@ -63,6 +66,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/enroll", s.enroll)
 	s.mux.HandleFunc("GET /v1/config", s.deviceAuth(s.getConfig))
 	s.mux.HandleFunc("POST /v1/config/ack", s.deviceAuth(s.acknowledgeConfig))
+	s.mux.HandleFunc("GET /v1/zones", s.deviceAuth(s.getDeviceZones))
 	s.mux.HandleFunc("POST /v1/locations/batch", s.deviceAuth(s.recordLocations))
 	s.mux.HandleFunc("GET /api/admin/devices", s.userAuth(s.listDevices))
 	s.mux.HandleFunc("POST /api/admin/devices", s.adminAuth(s.createDevice))
@@ -72,6 +76,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /api/admin/devices/{id}/config", s.adminAuth(s.updateConfig))
 	s.mux.HandleFunc("GET /api/admin/devices/{id}/locations", s.userAuth(s.locationHistory))
 	s.mux.HandleFunc("GET /api/admin/devices/{id}/telemetry", s.userAuth(s.telemetryHistory))
+	s.mux.HandleFunc("GET /api/admin/devices/{id}/zone-events", s.userAuth(s.zoneEventsHistory))
+	s.mux.HandleFunc("GET /api/admin/zones", s.userAuth(s.listZones))
+	s.mux.HandleFunc("POST /api/admin/zones", s.adminAuth(s.createZone))
+	s.mux.HandleFunc("GET /api/admin/zones/{id}", s.userAuth(s.getZone))
+	s.mux.HandleFunc("PATCH /api/admin/zones/{id}", s.adminAuth(s.updateZone))
+	s.mux.HandleFunc("DELETE /api/admin/zones/{id}", s.adminAuth(s.deleteZone))
 	s.mux.HandleFunc("GET /api/admin/mqtt", s.adminAuth(s.getMQTTSettings))
 	s.mux.HandleFunc("PUT /api/admin/mqtt", s.adminAuth(s.updateMQTTSettings))
 	s.mux.HandleFunc("GET /api/admin/users", s.adminAuth(s.listUsers))
@@ -239,12 +249,65 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not load device configuration")
 		return
 	}
+	configTag := configETag(config)
+	zonesTag := domain.ZonesETag(device.Zones)
+	w.Header().Set("ETag", configTag)
+	w.Header().Set("X-Zones-ETag", zonesTag)
+	if etagMatches(r.Header.Get("If-None-Match"), configTag) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	writeJSON(w, http.StatusOK, config)
+}
+
+func (s *Server) getDeviceZones(w http.ResponseWriter, r *http.Request) {
+	device := deviceFromContext(r)
+	zones, err := s.repo.ListDeviceZones(r.Context(), device.ID, true)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load device zones")
+		return
+	}
+	etag := domain.ZonesETag(zones)
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-store")
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"etag": etag, "zones": zones})
+}
+
+func configETag(config domain.Config) string {
+	payload := fmt.Sprintf("%t|%d|%d|%d|%d|%.3f|%d", config.Enabled,
+		config.LocationIntervalSeconds, config.SyncIntervalSeconds, config.SleepDurationSeconds,
+		config.GPSTimeoutSeconds, config.MinDistanceMeters, config.Version)
+	sum := crc32.Checksum([]byte(payload), crc32.MakeTable(crc32.Castagnoli))
+	return fmt.Sprintf(`W/"cfg-%d-%08x"`, config.Version, sum)
+}
+
+func etagMatches(header, etag string) bool {
+	if header == "" {
+		return false
+	}
+	want := strings.TrimPrefix(strings.TrimSpace(etag), "W/")
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		candidate = strings.TrimPrefix(candidate, "W/")
+		if candidate == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) acknowledgeConfig(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Version   int64             `json:"version"`
+		ZonesETag string            `json:"zones_etag,omitempty"`
 		Telemetry *domain.Telemetry `json:"telemetry,omitempty"`
 	}
 	if !decodeJSON(w, r, &request) {
@@ -252,6 +315,10 @@ func (s *Server) acknowledgeConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Version < 1 {
 		writeError(w, http.StatusBadRequest, "version must be positive")
+		return
+	}
+	if len(request.ZonesETag) > 256 {
+		writeError(w, http.StatusBadRequest, "zones_etag is too long")
 		return
 	}
 	device := deviceFromContext(r)
@@ -281,6 +348,15 @@ func (s *Server) acknowledgeConfig(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not acknowledge configuration")
 		return
+	}
+	if request.ZonesETag != "" {
+		if err := s.repo.AcknowledgeZones(r.Context(), deviceID, request.ZonesETag); errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "device not found")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not acknowledge zones")
+			return
+		}
 	}
 	if current, err := s.repo.GetConfig(r.Context(), deviceID); err == nil {
 		device.Config = current
@@ -368,14 +444,296 @@ func (s *Server) recordLocations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	device := deviceFromContext(r)
-	if err := s.repo.RecordLocations(r.Context(), device.ID, request.Locations); err != nil {
+	zoneState, err := s.repo.RecordLocations(r.Context(), device.ID, request.Locations)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not store locations")
 		return
 	}
 	if s.mqtt != nil {
 		s.mqtt.PublishLocation(device, request.Locations[len(request.Locations)-1])
+		if zoneState != nil {
+			s.mqtt.PublishZone(device, *zoneState)
+		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]int{"accepted": len(request.Locations)})
+}
+
+func (s *Server) listZones(w http.ResponseWriter, r *http.Request) {
+	zones, err := s.repo.ListZones(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load zones")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"zones": zones})
+}
+
+func (s *Server) getZone(w http.ResponseWriter, r *http.Request) {
+	zone, err := s.repo.GetZone(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "zone not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load zone")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"zone": zone})
+}
+
+func (s *Server) createZone(w http.ResponseWriter, r *http.Request) {
+	var input domain.ZoneInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if err := normalizeZoneInput(&input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	id, err := randomToken(16)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create zone")
+		return
+	}
+	zone, err := s.repo.CreateZone(r.Context(), id, input)
+	if errors.Is(err, store.ErrInvalidZoneGeometry) {
+		writeError(w, http.StatusBadRequest, "invalid zone geometry")
+		return
+	}
+	if errors.Is(err, store.ErrDuplicate) {
+		writeError(w, http.StatusConflict, "a zone with that name already exists")
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusBadRequest, "one or more devices do not exist")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create zone")
+		return
+	}
+	s.refreshDeviceZones(r.Context(), zone.DeviceIDs)
+	writeJSON(w, http.StatusCreated, map[string]any{"zone": zone})
+}
+
+func (s *Server) updateZone(w http.ResponseWriter, r *http.Request) {
+	var patch domain.ZonePatch
+	if !decodeJSON(w, r, &patch) {
+		return
+	}
+	if err := normalizeZonePatch(&patch); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	zone, affected, err := s.repo.UpdateZone(r.Context(), r.PathValue("id"), patch)
+	if errors.Is(err, store.ErrInvalidZoneGeometry) {
+		writeError(w, http.StatusBadRequest, "invalid zone geometry")
+		return
+	}
+	if errors.Is(err, store.ErrDuplicate) {
+		writeError(w, http.StatusConflict, "a zone with that name already exists")
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "zone or device not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update zone")
+		return
+	}
+	s.refreshDeviceZones(r.Context(), affected)
+	writeJSON(w, http.StatusOK, map[string]any{"zone": zone})
+}
+
+func (s *Server) deleteZone(w http.ResponseWriter, r *http.Request) {
+	affected, err := s.repo.DeleteZone(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "zone not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete zone")
+		return
+	}
+	s.refreshDeviceZones(r.Context(), affected)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) refreshDeviceZones(ctx context.Context, deviceIDs []string) {
+	if s.mqtt == nil || len(deviceIDs) == 0 {
+		return
+	}
+	wanted := make(map[string]struct{}, len(deviceIDs))
+	for _, deviceID := range deviceIDs {
+		wanted[deviceID] = struct{}{}
+	}
+	devices, err := s.repo.ListDevices(ctx)
+	if err != nil {
+		return
+	}
+	for _, device := range devices {
+		if _, ok := wanted[device.ID]; ok {
+			s.mqtt.RefreshDevice(device)
+		}
+	}
+}
+
+func normalizeZoneInput(input *domain.ZoneInput) error {
+	input.Name = strings.TrimSpace(input.Name)
+	if len(input.Name) < 1 || len(input.Name) > 120 {
+		return errors.New("zone name must contain 1 to 120 characters")
+	}
+	input.Kind = strings.ToLower(strings.TrimSpace(input.Kind))
+	if input.Kind == "" {
+		input.Kind = domain.ZoneKindOther
+	}
+	if !domain.ValidZoneKind(input.Kind) {
+		return errors.New("zone kind must be home, school, work or other")
+	}
+	input.Color = strings.TrimSpace(input.Color)
+	if input.Color == "" {
+		input.Color = "#0d7b74"
+	}
+	if !validZoneColor(input.Color) {
+		return errors.New("zone color must be a #RRGGBB value")
+	}
+	if input.HysteresisM == nil {
+		value := 25.0
+		input.HysteresisM = &value
+	}
+	if *input.HysteresisM < 0 || *input.HysteresisM > 1000 {
+		return errors.New("zone hysteresis must be between 0 and 1000 meters")
+	}
+	if input.DwellSeconds == nil {
+		value := 0
+		input.DwellSeconds = &value
+	}
+	if *input.DwellSeconds < 0 || *input.DwellSeconds > 86400 {
+		return errors.New("zone dwell must be between 0 and 86400 seconds")
+	}
+	if !validZoneGeometryJSON(input.Geometry) {
+		return errors.New("zone geometry must be a GeoJSON Polygon or MultiPolygon")
+	}
+	input.DeviceIDs = uniqueValues(input.DeviceIDs)
+	if len(input.DeviceIDs) > 100 {
+		return errors.New("a zone can be assigned to at most 100 devices")
+	}
+	return nil
+}
+
+func normalizeZonePatch(patch *domain.ZonePatch) error {
+	if patch.Name != nil {
+		value := strings.TrimSpace(*patch.Name)
+		if len(value) < 1 || len(value) > 120 {
+			return errors.New("zone name must contain 1 to 120 characters")
+		}
+		patch.Name = &value
+	}
+	if patch.Kind != nil {
+		value := strings.ToLower(strings.TrimSpace(*patch.Kind))
+		if !domain.ValidZoneKind(value) {
+			return errors.New("zone kind must be home, school, work or other")
+		}
+		patch.Kind = &value
+	}
+	if patch.Color != nil {
+		value := strings.TrimSpace(*patch.Color)
+		if !validZoneColor(value) {
+			return errors.New("zone color must be a #RRGGBB value")
+		}
+		patch.Color = &value
+	}
+	if patch.HysteresisM != nil && (*patch.HysteresisM < 0 || *patch.HysteresisM > 1000) {
+		return errors.New("zone hysteresis must be between 0 and 1000 meters")
+	}
+	if patch.DwellSeconds != nil && (*patch.DwellSeconds < 0 || *patch.DwellSeconds > 86400) {
+		return errors.New("zone dwell must be between 0 and 86400 seconds")
+	}
+	if len(patch.Geometry) > 0 && string(patch.Geometry) != "null" && !validZoneGeometryJSON(patch.Geometry) {
+		return errors.New("zone geometry must be a GeoJSON Polygon or MultiPolygon")
+	}
+	if patch.DeviceIDs != nil {
+		values := uniqueValues(*patch.DeviceIDs)
+		if len(values) > 100 {
+			return errors.New("a zone can be assigned to at most 100 devices")
+		}
+		patch.DeviceIDs = &values
+	}
+	return nil
+}
+
+func validZoneGeometryJSON(value json.RawMessage) bool {
+	if len(value) == 0 || string(value) == "null" || !json.Valid(value) {
+		return false
+	}
+	return true
+}
+
+func validZoneColor(value string) bool {
+	if len(value) != 7 || value[0] != '#' {
+		return false
+	}
+	for _, char := range value[1:] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func uniqueValues(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func (s *Server) zoneEventsHistory(w http.ResponseWriter, r *http.Request) {
+	from := time.Now().Add(-7 * 24 * time.Hour)
+	to := time.Now().Add(time.Minute)
+	var err error
+	if value := r.URL.Query().Get("from"); value != "" {
+		from, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "from must be RFC3339")
+			return
+		}
+	}
+	if value := r.URL.Query().Get("to"); value != "" {
+		to, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "to must be RFC3339")
+			return
+		}
+	}
+	if to.Before(from) {
+		writeError(w, http.StatusBadRequest, "to must be after from")
+		return
+	}
+	limit := 1000
+	if value := r.URL.Query().Get("limit"); value != "" {
+		limit, err = strconv.Atoi(value)
+		if err != nil || limit < 1 || limit > 5000 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 5000")
+			return
+		}
+	}
+	events, err := s.repo.ZoneEventsHistory(r.Context(), r.PathValue("id"), from, to, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load zone events")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
 func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
