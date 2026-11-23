@@ -83,6 +83,7 @@ func newCommandTestManager() *Manager {
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		devices:       make(map[string]domain.Device),
 		configs:       make(map[string]domain.Config),
+		zones:         make(map[string]domain.ZoneState),
 		commandTopics: map[string]string{"kidstracker/abc123/config/set": "abc123"},
 		out:           make(chan job, 1),
 		commands:      make(chan commandJob, 1),
