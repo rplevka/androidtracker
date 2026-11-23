@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -32,10 +33,12 @@ class MainActivity : Activity() {
     private lateinit var codeField: EditText
     private lateinit var enrollmentStatus: TextView
     private lateinit var statusDetails: TextView
+    private lateinit var tabBar: LinearLayout
     private lateinit var setupTab: Button
     private lateinit var statusTab: Button
     private lateinit var setupPanel: LinearLayout
     private lateinit var statusPanel: LinearLayout
+    private lateinit var appFooter: TextView
     private lateinit var syncButton: Button
     private lateinit var reliabilityStatus: TextView
     private lateinit var batterySettingsButton: Button
@@ -59,7 +62,7 @@ class MainActivity : Activity() {
             textSize = 22f
         }, match())
 
-        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         setupTab = Button(this).apply {
             text = "Enrollment"
             setOnClickListener { selectedTab = TAB_SETUP; renderUi() }
@@ -68,9 +71,9 @@ class MainActivity : Activity() {
             text = "Status"
             setOnClickListener { selectedTab = TAB_STATUS; renderUi() }
         }
-        tabs.addView(setupTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        tabs.addView(statusTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        root.addView(tabs, match())
+        tabBar.addView(setupTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        tabBar.addView(statusTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(tabBar, match())
 
         setupPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -132,8 +135,28 @@ class MainActivity : Activity() {
         statusPanel.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         root.addView(statusPanel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
+        appFooter = TextView(this).apply {
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(0xFF6B7280.toInt())
+            setPadding(0, padding / 2, 0, 0)
+            text = appVersionLabel()
+        }
+        root.addView(appFooter, match())
+
         setContentView(root)
         renderUi()
+    }
+
+    private fun appVersionLabel(): String {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        val revision = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+        return "Kidstracker ${info.versionName ?: "unknown"} · revision $revision"
     }
 
     private fun match() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -154,8 +177,10 @@ class MainActivity : Activity() {
         if (activated) selectedTab = TAB_STATUS
         else if (preferences.getBoolean(TrackerService.PREF_REVOKED, false)) selectedTab = TAB_SETUP
 
+        tabBar.visibility = if (activated) View.GONE else View.VISIBLE
         setupTab.visibility = if (activated) View.GONE else View.VISIBLE
         setupTab.isSelected = selectedTab == TAB_SETUP
+        statusTab.visibility = if (activated) View.GONE else View.VISIBLE
         statusTab.isSelected = selectedTab == TAB_STATUS
         setupPanel.visibility = if (!activated && selectedTab == TAB_SETUP) View.VISIBLE else View.GONE
         statusPanel.visibility = if (activated || selectedTab == TAB_STATUS) View.VISIBLE else View.GONE
