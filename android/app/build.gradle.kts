@@ -11,8 +11,8 @@ android {
         applicationId = "org.kidstracker.client"
         minSdk = 26
         targetSdk = 28
-        versionCode = 11
-        versionName = "0.8.0"
+        versionCode = 12
+        versionName = "0.8.1"
         testInstrumentationRunner = "android.test.runner.AndroidJUnitRunner"
     }
 
