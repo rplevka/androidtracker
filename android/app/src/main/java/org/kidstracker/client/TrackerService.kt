@@ -37,6 +37,9 @@ class TrackerService : Service() {
     private var locationManager: LocationManager? = null
     private val locationListeners = CopyOnWriteArrayList<LocationListener>()
     private var wakeLock: PowerManager.WakeLock? = null
+    private val lifecycleLock = Any()
+    private var cycleRunning = false
+    private var latestStartId = 0
     @Volatile private var cycleFinished = false
     private var scheduledWakeAt = 0L
     private var cycleStartedAt = 0L
@@ -48,19 +51,32 @@ class TrackerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, notification())
+        val manualSync = intent?.action == ACTION_SYNC_NOW
+        synchronized(lifecycleLock) {
+            latestStartId = startId
+            if (cycleRunning) return START_NOT_STICKY
+            cycleRunning = true
+            cycleFinished = false
+            cycleStartedAt = SystemClock.elapsedRealtime()
+            scheduledWakeAt = if (manualSync) 0L else preferences.getLong(PREF_NEXT_WAKE, 0L)
+        }
+        // A previous cycle may have stopped the foreground notification after
+        // this start was delivered but before it acquired the lifecycle lock.
+        startForeground(NOTIFICATION_ID, notification())
         acquireWakeLock()
-        cycleStartedAt = SystemClock.elapsedRealtime()
-        scheduledWakeAt = if (intent?.action == ACTION_SYNC_NOW) {
-            0L
-        } else {
-            preferences.getLong(PREF_NEXT_WAKE, 0L)
-        }
-        if (intent?.action == ACTION_SYNC_NOW) {
-            executor.execute { syncNow() }
-        } else {
-            executor.execute { beginCycle() }
-        }
+        // If the process dies before the cycle finishes, this alarm restarts it.
+        TrackerScheduler.schedule(this, WATCHDOG_DELAY_SECONDS)
+        executor.execute { runCycle(manualSync) }
         return START_NOT_STICKY
+    }
+
+    private fun runCycle(manualSync: Boolean) {
+        try {
+            if (manualSync) syncNow() else beginCycle()
+        } catch (t: Throwable) {
+            markSyncFailure(if (t is Exception) t else Exception(t))
+            finishCycle(nextWakeDelaySeconds(cachedConfig(), batteryPercent(), isCharging()))
+        }
     }
 
     private fun beginCycle() {
@@ -545,8 +561,7 @@ class TrackerService : Service() {
 		}
 		finishSync(updatedConfig != null, configAcknowledged, configError, uploadError,
 			uploadError == null, false)
-		TrackerScheduler.schedule(this, nextWakeDelaySeconds(updatedConfig ?: cachedConfig(), battery, charging))
-		stopAfterManualSync()
+		stopAfterManualSync(nextWakeDelaySeconds(updatedConfig ?: cachedConfig(), battery, charging))
     }
 
     private fun request(url: String, token: String, method: String): HttpURLConnection =
@@ -606,39 +621,60 @@ class TrackerService : Service() {
         locationListeners.clear()
     }
 
-    @Synchronized
     private fun finishCycle(delaySeconds: Int) {
-        if (cycleFinished) return
-        cycleFinished = true
-        TrackerScheduler.schedule(this, delaySeconds)
-        clearLocationListener()
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
-        stopForeground(true)
-        stopSelf()
+        synchronized(lifecycleLock) {
+            if (!cycleRunning || cycleFinished) return
+            cycleFinished = true
+            cycleRunning = false
+            val stopId = latestStartId
+            clearLocationListener()
+            wakeLock?.let { if (it.isHeld) it.release() }
+            wakeLock = null
+            stopForeground(true)
+            try {
+                // Never schedule an immediate re-fire while this service is still
+                // shutting down. The next start must happen after this one stops.
+                TrackerScheduler.schedule(this, delaySeconds.coerceAtLeast(1))
+            } finally {
+                stopSelf(stopId)
+            }
+        }
     }
 
-    @Synchronized
     private fun stopPermanently() {
-        if (cycleFinished) return
-        cycleFinished = true
-        TrackerScheduler.cancel(this)
-        clearLocationListener()
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
-        stopForeground(true)
-        stopSelf()
+        synchronized(lifecycleLock) {
+            if (!cycleRunning || cycleFinished) return
+            cycleFinished = true
+            cycleRunning = false
+            val stopId = latestStartId
+            clearLocationListener()
+            wakeLock?.let { if (it.isHeld) it.release() }
+            wakeLock = null
+            try {
+                TrackerScheduler.cancel(this)
+            } finally {
+                stopForeground(true)
+                stopSelf(stopId)
+            }
+        }
     }
 
-    @Synchronized
-    private fun stopAfterManualSync() {
-        if (cycleFinished) return
-        cycleFinished = true
-        clearLocationListener()
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
-        stopForeground(true)
-        stopSelf()
+    private fun stopAfterManualSync(delaySeconds: Int) {
+        synchronized(lifecycleLock) {
+            if (!cycleRunning || cycleFinished) return
+            cycleFinished = true
+            cycleRunning = false
+            val stopId = latestStartId
+            clearLocationListener()
+            wakeLock?.let { if (it.isHeld) it.release() }
+            wakeLock = null
+            stopForeground(true)
+            try {
+                TrackerScheduler.schedule(this, delaySeconds.coerceAtLeast(1))
+            } finally {
+                stopSelf(stopId)
+            }
+        }
     }
 
     private fun acquireWakeLock() {
@@ -671,6 +707,10 @@ class TrackerService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onDestroy() {
+        synchronized(lifecycleLock) {
+            cycleRunning = false
+            cycleFinished = true
+        }
         clearLocationListener()
         wakeLock?.let { if (it.isHeld) it.release() }
         executor.shutdown()
@@ -704,5 +744,6 @@ class TrackerService : Service() {
         private const val MAX_QUEUED_LOCATIONS = 500
         private const val CHANNEL_ID = "location-checks"
         private const val NOTIFICATION_ID = 1001
+        private const val WATCHDOG_DELAY_SECONDS = 300
     }
 }
